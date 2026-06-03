@@ -244,3 +244,6 @@ Nếu làm thật, mình sẽ nghiêng về:
 - merge giữa project phải là flow có wizard, không merge âm thầm; wizard cần cho chọn tiêu chí như chủ đề, đối tượng, khái niệm, quyết định, pattern, relation, hoặc local→global
 - config theo project chứa `project_id` định danh duy nhất nằm ngay trong project để điều hướng lưu trữ
 - nên dùng mô hình Hybrid: lưu dữ liệu thật tại Global Server và chỉ định cấu hình/ID ở Local Project
+- **Tập trung vào Situational Metadata**: Memory phải lưu được "Tại sao" (Rationale, trade-offs, constraints, domain scale) thay vì chỉ nhân bản thông tin thô/boilerplate của code.
+- **Cơ chế Situational Query**: Hỗ trợ truy vấn sâu theo bối cảnh và ý đồ (Intent & Constraints) để trả về Reasoning-Ready Context cho Agent thế hệ sau.
+- **Đồ thị liên kết vĩ mô (Smart Macro-Graph)**: Tập trung vẽ mối liên hệ lớn giữa các Module, Entity, Decision, Constraint thay vì các hàm/file lẻ tẻ để tránh "Hairball Problem", hỗ trợ duyệt phân cấp (Hierarchical Graph Navigation - Big Picture trước, Zoom-in sau).

@@ -89,6 +89,53 @@ Wizard cần liệt kê rõ các option, ví dụ:
 - không đẩy local lên global chỉ vì giống bề mặt
 - merge phải là hành động có chủ đích, có thể audit lại
 
+## Đồ thị liên kết vĩ mô (Smart Macro-Graph)
+
+Hầu hết các hệ thống đồ thị tri thức hiện nay gặp phải **vấn nạn đồ thị mạng nhện (Hairball Problem)** do sa đà vào việc ghi nhận các liên kết quá nhỏ (ví dụ: `FunctionA gọi FunctionB`, `FileC import FileD`). Điều này tạo ra hàng ngàn node nhiễu, làm loãng ngữ cảnh và gây quá tải token cho Agent. 
+
+Smart Memory giải quyết vấn đề này bằng cách thiết kế một **Smart Macro-Graph (Đồ thị Liên kết Vĩ mô)** tập trung vào các thực thể và mối quan hệ ở mức cao (High-Level).
+
+### 1. Các loại Node Vĩ mô (Macro-nodes)
+Hệ thống chỉ định nghĩa và lưu trữ đồ thị với các nhóm node cốt lõi:
+- **Module / Domain Node**: Các phân khu chức năng hoặc dịch vụ lớn (ví dụ: `AuthService`, `BillingModule`, `MemoryRegistry`).
+- **Domain Object / Core Entity Node**: Các thực thể nghiệp vụ trung tâm (ví dụ: `User`, `ProjectMemory`, `Invoice`).
+- **Decision Node (Quyết định)**: Các quyết định thiết kế lớn ảnh hưởng đến toàn bộ hệ thống hoặc các module cụ thể.
+- **Constraint Node (Ràng buộc)**: Các giới hạn kỹ thuật hoặc nghiệp vụ (ví dụ: `LowLatencyRequirement`, `OfflineFirst`).
+
+### 2. Các mối quan hệ Vĩ mô (Macro-relationships)
+Thay vì liên kết gọi hàm đơn thuần, đồ thị biểu diễn các tương tác kiến trúc:
+- `DEPENDS_ON` (Phụ thuộc cấu trúc giữa các module lớn).
+- `COMMUNICATES_VIA` (Phương thức giao tiếp: Event-driven, Sync RPC, Shared Database).
+- `CONTAINS` (Quan hệ phân cấp: Module chứa các Entity và các file/class cốt lõi).
+- `IMPACTS` (Quyết định thiết kế ở Module A tạo ra ràng buộc hoặc thay đổi hành vi ở Module B).
+- `RESOLVES` (Quyết định kiến trúc giải quyết một Constraint cụ thể).
+
+```mermaid
+graph TD
+    classDef module fill:#1f77b4,stroke:#333,stroke-width:2px,color:#fff;
+    classDef entity fill:#2ca02c,stroke:#333,stroke-width:2px,color:#fff;
+    classDef decision fill:#ff7f0e,stroke:#333,stroke-width:2px,color:#fff;
+    classDef constraint fill:#d62728,stroke:#333,stroke-width:2px,color:#fff;
+
+    M1["Module: Web Registry"]:::module
+    M2["Module: Memory Storage"]:::module
+    E1["Entity: ProjectMemory"]:::entity
+    D1["Decision: Hybrid Storage Model"]:::decision
+    C1["Constraint: No Path-Drift Allowed"]:::constraint
+
+    M1 -->|DEPENDS_ON| M2
+    M2 -->|CONTAINS| E1
+    D1 -->|RESOLVES| C1
+    D1 -->|IMPACTS| M2
+    D1 -->|IMPACTS| M1
+```
+
+### 3. Cơ chế Duyệt đồ thị Phân cấp (Hierarchical Graph Navigation)
+- **Big Picture First (Tổng quan trước)**: Mặc định, khi Agent hoặc Web view truy vấn đồ thị, hệ thống chỉ hiển thị các mối liên kết giữa các Module và Entity lớn để Agent nắm được luồng dữ liệu chính và ranh giới (boundaries) của hệ thống.
+- **Lazy Zoom-In (Chi tiết sau)**: Chỉ khi Agent có yêu cầu cụ thể về một mối quan hệ phức tạp (ví dụ: *"Tôi muốn biết chính xác cách Web Registry tương tác với Memory Storage"*), hệ thống mới thực hiện phân giải xuống tầng micro (danh sách API endpoints, Class giao tiếp cốt lõi) tương ứng với cạnh `DEPENDS_ON` hoặc `COMMUNICATES_VIA` đó.
+
+---
+
 ## Vì sao phải tách
 Trước đây ICM lưu trữ quá mù quáng:
 - ghi mọi thứ vào cùng một chỗ
@@ -188,6 +235,53 @@ Project này tồn tại để thay thế kiểu đó bằng một hệ thống 
 - đọc theo ngữ cảnh, không đọc thô
 - update một lần, nhiều agent cùng dùng
 - user và agent đều có thể truy cập cùng một nguồn sự thật
+
+## Đa dạng hóa thông tin & Situational Metadata (Tránh trùng lặp tri thức)
+
+Hệ thống không chỉ lưu trữ thông tin boilerplate (như cấu trúc code, sơ đồ file, API thô - những thứ mà công cụ phân tích code thông thường có thể tự trích xuất). Để tránh trở thành một công cụ trùng lặp tri thức, Smart Memory tập trung vào việc **lưu trữ và truy vấn chiều sâu của tri thức: "Tại sao lại làm như vậy?" (Rationale & Context)**.
+
+Quyết định thiết kế và kiến trúc không phải là một khuôn mẫu áp dụng 100% cho mọi trường hợp, mà biến đổi linh hoạt theo tình hình thực tế, quy mô của module/domain, và các ràng buộc tại thời điểm đó.
+
+### 1. Phân tầng thông tin trong Memory
+Hệ thống chia thông tin lưu trữ thành 3 tầng:
+- **Tầng Thô (Raw/Structural Fact - Hạn chế lưu tĩnh)**: Cấu trúc thư mục, danh sách class/function, API payload. Tầng này nên được sinh động (dynamic extraction) thông qua các tool đọc của Agent thay vì lưu cứng để tránh lệch sync với code thực tế.
+- **Tầng Ngữ cảnh (Situational Context - Trung tâm)**: Quy mô của domain (lớn/nhỏ), mức độ phức tạp của module, giai đoạn phát triển của dự án (prototype vs production-ready), các ràng buộc kỹ thuật tại thời điểm ra quyết định.
+- **Tầng Tư duy (Reasoning/Rationale - Cốt lõi)**: Tại sao lại chọn giải pháp thiết kế này? Các phương án thay thế đã cân nhắc là gì? Đánh đổi (trade-offs) lớn nhất là gì? Tại sao lại lệch (deviate) khỏi pattern chung?
+
+### 2. Schema cho Quyết định Kiến trúc & Thiết kế (Architecture Decision)
+Mỗi bản ghi quyết định kiến trúc (ví dụ: `decision_record`) trong memory cần có cấu trúc meta đủ rộng:
+```json
+{
+  "decision_id": "dec_uuid_v4",
+  "title": "Chuyển từ Local-first sang Hybrid Storage",
+  "domain_scope": "storage-layer",
+  "domain_scale": "small-to-medium", 
+  "context": "Mô tả bối cảnh: hệ thống cần một Unified Memory Layer để cross-search nhưng lại gặp vấn đề path-drift khi người dùng di chuyển thư mục dự án.",
+  "constraints": [
+    "Không làm bẩn thư mục local",
+    "Không phụ thuộc vào absolute path hash"
+  ],
+  "alternatives_considered": [
+    {
+      "solution": "Local-only (Co-located)",
+      "rejected_reason": "Khiến server khó quản lý registry, tìm kiếm chéo chậm và dễ làm bẩn git repo của dự án."
+    }
+  ],
+  "chosen_solution": "Hybrid (Centralized Store + Local ID Config)",
+  "trade_offs": {
+    "advantages": ["Workspace sạch", "Không sợ path-drift", "Dễ dàng sync cloud"],
+    "advantages_detail": "Phù hợp với domain module vừa và nhỏ, nơi chi phí vận hành hạ tầng thấp được ưu tiên hơn tính phân tán cực đoan.",
+    "disadvantages": ["Yêu cầu một CLI command `smem init` để tạo ID ban đầu"]
+  },
+  "status": "approved",
+  "timestamp": "2026-06-03T18:25:00Z"
+}
+```
+
+### 3. Cơ chế Truy vấn theo Ngữ cảnh (Situational Query)
+Hệ thống truy vấn không thực hiện tìm kiếm từ khóa phẳng (flat keyword matching) mà hỗ trợ truy vấn sâu theo **Intent & Constraints**:
+- **Bóc tách bối cảnh của câu hỏi**: Khi Agent hỏi *"Tôi nên viết module này theo pattern nào?"*, Server sẽ bóc tách các đặc tính của module hiện tại (ví dụ: module nhỏ, ít trạng thái) để đối chiếu với các quyết định tương tự trong quá khứ của các dự án khác.
+- **Trả về Reasoning-Ready Context**: Trả về không chỉ giải pháp, mà là cả chuỗi lập luận (bối cảnh $\rightarrow$ ràng buộc $\rightarrow$ đánh đổi) để Agent hiểu được động lực thực sự đằng sau thiết kế đó và áp dụng một cách thông minh, tránh "suy diễn mù quáng".
 
 ## Nguyên tắc thiết kế
 - Không dùng raw markdown dump làm trung tâm đọc chính.
