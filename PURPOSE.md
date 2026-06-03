@@ -290,6 +290,21 @@ Hệ thống truy vấn không thực hiện tìm kiếm từ khóa phẳng (fla
 - Không làm kiến trúc phình to nếu một proxy + JSON là đủ.
 - Ưu tiên thứ thực sự hữu dụng cho agent hơn là cách tổ chức nhìn có vẻ đẹp.
 
+## Bảo vệ Mã nguồn & Quy trình Phân phối (Source Code Protection & Build-first Distribution)
+
+Để bảo vệ tài sản trí tuệ và ngăn chặn việc người dùng hoặc AI Agent can thiệp/đọc trực tiếp mã nguồn thô (raw source code), hệ thống áp dụng cơ chế **Phân phối qua Bản Build (Build-first Distribution)**.
+
+### 1. Cơ chế Bảo vệ Mã nguồn
+- **Phát triển (Development)**: Lập trình viên viết mã nguồn mở rộng, dễ đọc bằng TypeScript/TSX tại thư mục `src/`.
+- **Đóng gói (Compilation & Bundling)**: Trước khi xuất bản (publish), mã nguồn được biên dịch, gộp file (bundle), giảm dung lượng (minify) và làm rối mã (obfuscate) bằng các công cụ như `tsup`, `esbuild` hoặc `rollup`.
+- **Bản phân phối cuối (Distribution Bundle)**: 
+  - Chỉ phân phối các tệp đã được compile trong thư mục `dist/` (ví dụ: `dist/index.js`, `dist/bin/smem.js`) và các file asset của giao diện frontend đã được build tĩnh.
+  - Sử dụng trường `"files"` trong `package.json` hoặc `.npmignore` để chặn hoàn toàn thư mục `src/` bị đẩy lên npm registry hoặc đóng gói vào file release.
+
+### 2. Môi trường Thực thi của User
+- Khi người dùng chạy lệnh CLI qua `npx smem` hoặc cài đặt global, hệ thống sẽ chạy trực tiếp bản build đã được tối giản ở `dist/`.
+- Bản build này vừa giúp tăng tốc độ khởi động (vì đã được minify và gộp tệp), vừa đóng vai trò là một lớp chắn ngăn chặn người dùng hoặc Agent đọc và chỉnh sửa logic nghiệp vụ cốt lõi của công cụ.
+
 ## Kết quả mong muốn
 Khi project hoàn chỉnh, nó phải cho phép:
 - agent hỏi và nhận đúng context cần thiết

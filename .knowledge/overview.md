@@ -286,3 +286,4 @@ Nếu làm thật, mình sẽ nghiêng về:
 - **Tập trung vào Situational Metadata**: Memory phải lưu được "Tại sao" (Rationale, trade-offs, constraints, domain scale) thay vì chỉ nhân bản thông tin thô/boilerplate của code.
 - **Cơ chế Situational Query**: Hỗ trợ truy vấn sâu theo bối cảnh và ý đồ (Intent & Constraints) để trả về Reasoning-Ready Context cho Agent thế hệ sau.
 - **Đồ thị liên kết vĩ mô (Smart Macro-Graph)**: Tập trung vẽ mối liên hệ lớn giữa các Module, Entity, Decision, Constraint thay vì các hàm/file lẻ tẻ để tránh "Hairball Problem", hỗ trợ duyệt phân cấp (Hierarchical Graph Navigation - Big Picture trước, Zoom-in sau).
+- **Bảo vệ Mã nguồn (Source Code Protection)**: Phân phối sản phẩm dưới dạng bản build đã compile/minify/obfuscated ở thư mục `dist/`, không cung cấp code TS thô (`src/`) cho user để bảo vệ sở hữu trí tuệ và tăng tốc độ khởi chạy.
