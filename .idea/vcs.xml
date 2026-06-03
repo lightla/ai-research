@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/OpenViking" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/RetainDB" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/agentmemory" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/hindsight" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/honcho" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/mem0" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/neural-memory" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/retaindb-hermes" vcs="Git" />
+  </component>
+</project>
