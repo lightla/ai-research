@@ -119,9 +119,7 @@ Khi người dùng chạy `smem init` trong thư mục gốc của một dự á
    ```json
    {
      "project_id": "proj_9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-     "project_name": "my-cool-app",
-     "version": "1.0",
-     "exclude": [".git", "node_modules", "dist", "tmp"]
+     "project_name": "my-cool-app"
    }
    ```
 4. **Khởi tạo thư mục ở Global Store**: CLI gọi API server hoặc tự tạo thư mục lưu trữ thực tế tại:
@@ -130,7 +128,7 @@ Khi người dùng chạy `smem init` trong thư mục gốc của một dự á
 
 ### Nguyên tắc của File Cấu hình Local
 - Config project phải nằm trong project và được khuyến nghị commit lên Git để chia sẻ trong team.
-- File config là metadata định danh và điều khiển hành vi (như quy tắc loại trừ file, rule merge mặc định), tuyệt đối không chứa dữ liệu memory chính.
+- File config là metadata định danh (chỉ chứa các trường thông tin tối giản để ánh xạ dữ liệu), tuyệt đối không chứa dữ liệu memory chính.
 - Nếu config bị mất, người dùng có thể khôi phục bằng cách gán lại `project_id` cũ từ Global Registry.
 
 ## Memory lưu ở đâu

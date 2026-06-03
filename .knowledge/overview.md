@@ -45,7 +45,7 @@ Hướng hợp lý nhất là một hệ hybrid, nhưng tối giản:
 - **Lớp web**: có thể render tài liệu từ JSON cho user tra cứu/chỉnh sửa, nhưng mọi edit phải ghi ngược về JSON rồi reload state.
 - **Phân lớp memory**: tách rõ `global` và `local` để không lẫn tri thức giữa các dự án; mỗi dự án local được định danh bằng một `project_id` duy nhất (UUID) lưu trong file cấu hình local.
 - **Merge wizard**: phải có pipeline hỏi người dùng chọn tiêu chí merge khi muốn hợp nhất local/local hoặc local/global.
-- **Project config file**: khởi tạo bằng `smem init`, chứa file cấu hình siêu nhẹ (ví dụ `.smart-memory.config.json` hoặc `.smart-memory.config.yml`) lưu trong dự án để định danh `project_id` (UUID) và các cấu hình cục bộ khác.
+- **Project config file**: khởi tạo bằng `smem init`, chứa file cấu hình siêu nhẹ (ví dụ `.smart-memory.config.json` hoặc `.smart-memory.config.yml`) lưu trong dự án để định danh `project_id` (UUID) và tên dự án.
 - **Storage model**: sử dụng mô hình Hybrid (Centralized Storage + Local Config); dữ liệu memory được lưu tập trung tại global (`~/.smart-memory/projects/<project_id>`), còn dự án local chỉ lưu ID định danh.
 
 Điểm mấu chốt là:
