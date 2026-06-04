@@ -8,6 +8,28 @@
 - Các kỹ năng được định nghĩa dưới dạng các file Markdown (`SKILL.md`) lưu tại thư mục cài đặt của plugin.
 - Sinh ra các file đặc tả thiết kế tĩnh trong dự án tại thư mục `docs/superpowers/specs/`.
 
+## Kỹ thuật từ source code
+
+### SKILL.md Format
+Mỗi skill là một file Markdown tự chứa:
+- Metadata: tên, trigger condition, mô tả
+- Instructions: hướng dẫn step-by-step cho agent
+- Examples: ví dụ input/output
+
+Skills có thể **gọi nhau** (composability) — một planning skill có thể invoke TDD skill khi cần.
+
+### SessionStart Injection
+Skill `using-superpowers` được inject vào đầu mỗi session để "huấn luyện" agent nhận biết khi nào cần dùng skill nào. Quy tắc 1%: nếu có bất kỳ 1% khả năng một skill liên quan → phải invoke nó.
+
+### 30+ Skills (từ source)
+- `writing-plans`, `test-driven-development`, `requesting-code-review`
+- `dispatching-parallel-agents`, `writing-skills`
+- Brainstorm → Planning → SDD → TDD là workflow mặc định
+
+### Zero Infrastructure
+- Không daemon, không DB, không network — chỉ file Markdown + platform Skill loader
+- Specs output lưu vào `docs/superpowers/specs/` trong git repo
+
 ## Mô hình retrieval
 - Sử dụng công cụ nạp Skill của nền tảng (`Skill` tool hoặc `activate_skill` tool) để nạp nội dung chi tiết của từng kỹ năng khi cần thiết.
 - Ở đầu phiên làm việc (`SessionStart`), hệ thống inject kỹ năng hướng dẫn chung `using-superpowers` để huấn luyện agent cách tự động gọi các kỹ năng chuyên biệt khác khi có bất kỳ dấu hiệu liên quan nào (quy tắc 1% áp dụng).
@@ -23,9 +45,11 @@
 - Tài liệu hóa toàn bộ quá trình brainstorm và thiết kế dưới dạng specs tĩnh trong git repository.
 
 ## Giới hạn
-- Thiếu lớp bộ nhớ dữ liệu động (no dynamic memory DB) để lưu trữ vết chạy tool, logs sự kiện hay các thực thể tri thức của dự án.
-- Không thể tìm kiếm chéo (cross-project search) hay tổng hợp tri thức tự động giữa các dự án khác nhau.
-- Hoàn toàn phụ thuộc vào khả năng tuân thủ prompt hệ thống của Agent.
+- **Không có dynamic memory DB**: không lưu facts, events, decisions — mọi thứ mất khi session kết thúc
+- **Prompt compliance dependent**: nếu agent không follow instructions → cả hệ sụp, không có fallback
+- **Static specs**: `docs/superpowers/specs/` không tự update theo code thay đổi
+- **Không có cross-project search**: knowledge không di chuyển giữa projects
+- **Không có memory boundary**: không phân tách global/local
 
 ## Mức độ phù hợp với mục tiêu của bạn
 - Là tài liệu tham khảo tuyệt vời để thiết kế **Lớp Quy trình / Hành vi (Process/Workflow Layer)** cho Smart Memory.

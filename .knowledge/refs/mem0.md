@@ -9,6 +9,30 @@ Mem0 là một memory layer cho AI assistant và agent, có cả đường hoste
 - SDK cho tích hợp sản phẩm
 - Memory client hỗ trợ add, search, update, delete, và các flow quản trị liên quan
 
+## Kỹ thuật từ source code
+
+### Provider Ecosystem — Quy mô thực
+- **24 LLM backends**: OpenAI, Anthropic, AWS Bedrock, Azure, Gemini, Ollama, v.v.
+- **15 embedding providers**: local + cloud
+- **30+ vector store implementations**: Pinecone, Weaviate, Chroma, pgvector, Qdrant, v.v.
+- **4 graph DB backends**: Neo4j, Memgraph, FalkorDB, Amazon Neptune
+- **5 rerankers**: cross-encoder models
+
+Mọi config class đều dùng **Pydantic v2** — type-safe nhưng verbose.
+
+### Memory Interface (shared Python + TypeScript)
+```python
+memory.add(messages, user_id=..., agent_id=..., run_id=..., metadata=...)
+memory.search(query, user_id=..., limit=10)
+memory.update(memory_id, data)
+memory.delete(memory_id)
+memory.history(memory_id)   # audit trail
+```
+
+### Dual Deployment Mode
+- **Hosted**: gọi `mem0.ai` API
+- **Self-hosted OSS**: local embeddings + local vector store, không cần cloud
+
 ## Mô hình retrieval
 - Retrieval đa tín hiệu
 - Vector search đi cùng keyword search
@@ -27,7 +51,11 @@ Mem0 là một memory layer cho AI assistant và agent, có cả đường hoste
 - Có thể là lớp memory service cho app bên ngoài
 
 ## Giới hạn
-- Ít tập trung vào capture lifecycle của agent hơn `agentmemory` hoặc `RetainDB`
+- **Không có memory consolidation**: memories không tự evolve — không có `supersedes`, không có versioning, không có learning loop
+- **Generic interface làm hại chuyên biệt hóa**: một API cho cả semantic lẫn structured query → không optimize cho use case nào
+- **30+ vector store integrations = technical debt**: cực khó maintain khi upstream change API
+- **Không có capture lifecycle**: không hook vào agent session, không tự học từ vận hành
+- **Không có memory boundary global/local**: một kho cho tất cả, không phân tách project
 - Ít nhấn mạnh delivery context theo chunk hơn `RetainDB`
 
 ## Mức độ phù hợp với mục tiêu của bạn

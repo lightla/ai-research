@@ -5,9 +5,9 @@
 # ═══════════════════════════════════════════════════
 ---
 brain: default
-updated: 2026-06-03T08:24:36
-neurons: 2738
-synapses: 13112
+updated: 2026-06-04T04:25:04
+neurons: 2660
+synapses: 12295
 token_budget: 1200
 depth_available: [surface, detail, deep]
 ---
@@ -17,36 +17,37 @@ depth_available: [surface, detail, deep]
 # Agent: scan this section to understand the knowledge landscape.
 # Format: [id] content (type) {p:N} →edge→ [target_id_or_text]
 
-[c23] found (anthropic_api_key, gemini_api_key, openrouter_api_key, minimax_api_key,… (concept) {p:5}
-
-[c24] Error: to sufficiently increase receive buffer size (was: 208 kib, wanted:… (concept) {p:5}
-  →co_occurs→ "Error: to fetch" là js không call được `/dev/analytics/data`"
-  →is_a→ "7 memories about concept: kib, error, sufficiently,…"
-  →is_a→ "8 memories about concept: kib, error, sufficiently,…"
+[c24] found (anthropic_api_key, gemini_api_key, openrouter_api_key, minimax_api_key,… (concept) {p:5}
+  →co_occurs→ "found (anthropic_api_key, gemini_api_key,…"
 
 [c25] Session activity: | **403** | Forbidden | Đã đăng nhập nhưng không có quyền |… (concept) {p:5}
   →has_value→ "**401 vs 403** — ranh giới rõ = - 401 = *"Tôi không biết…"
   →involves→ "**401 vs 403** — ranh giới rõ = - 401 = *"Tôi không biết…"
+  →related_to→ "forbidden đăng"
   →involves→ "CoreServiceExceptionHandler"
+  →involves→ "DomainMessageException"
 
-[e3] chạy gg thống kê qua JSON account hay phải qua oauth playground thế ok mô tả… (entity) {p:5}
-  →co_occurs→ "GCP Service Account"
-  →co_occurs→ "File"
-  →co_occurs→ "ga.md"
-
-[e4] check giúp mình (entity) {p:5}
+[e3] check giúp mình (entity) {p:5}
+  →co_occurs→ "col_4: hay redirect sai? redirect=/todo cũng ko được luôn…"
   →co_occurs→ "col_3: hay trang blank"
   →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
-  →co_occurs→ "col_0: Session activity: php artisan route:list…"
 
-[e5] thấy lỗi gì cụ thể khi truy cập URL đó (entity) {p:5}
+[e4] thấy lỗi gì cụ thể khi truy cập URL đó (entity) {p:5}
+  →co_occurs→ "col_4: hay redirect sai? redirect=/todo cũng ko được luôn…"
   →co_occurs→ "col_3: hay trang blank"
   →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
-  →co_occurs→ [e4] "check giúp mình"
-  →co_occurs→ "col_0: Session activity: php artisan route:list…"
+  →co_occurs→ [e3] "check giúp mình"
 
-[c1] Session activity: ->setFilters(['id' => $id]) ->setFields((array)… (concept) {p:6}
+[c26] Session activity: curl --location --request GET… (concept) {p:5}
+
+[c1] Session activity: lại ngu nữa, $user = getUser()?:User  ; … (concept) {p:6}
+  →co_occurs→ "Session activity: sao lại báo lỗi trong…"
+  →involves→ "user_photo_id"
+  →involves→ "đã giờ cần sửa lại này"
+
+[c2] Session activity: ->setFilters(['id' => $id]) ->setFields((array)… (concept) {p:6}
   →involves→ "IAMModuleRegistration"
+  →involves→ "ControllerMethodSpec"
 
 # ── CLUSTERS ───────────────────────────────────────
 # Auto-detected topic groups from brain.db entity co-occurrence.
@@ -62,32 +63,31 @@ depth_available: [surface, detail, deep]
 # Active alerts, unresolved items, pending decisions.
 # Agent: check this FIRST each session for urgent context.
 
+! User wants 'claude --yolo' as a shortcut/alias for 'claude --dangerously-skip-pe
+~ User wants 'agy --yolo' as a shortcut/alias for 'agy --dangerously-skip-permissi
+! Session activity: public string $accessToken, public string $refreshToken, publi | Session…
+! Session activity: 'access_expires_in'  => $refreshed->expiresInSeconds, 'refresh
+! Session activity: <command-message>login</command-message> <command-args></comma
+! Session activity: return $expiresAt !== '' && Carbon::parse($expiresAt)->lessTha | Session…
 ! Session activity: Thực ra root cause là: **trans field nên được xem là atomic ha
 ~ Session activity: - **Validation**: cần biết data có đầy đủ không - **Change tra
 ! Session activity: Đúng — đây là case cụ thể: - **Create**: `trans` gửi lên, bắt
 ! Session activity: Khác với marker interface thuần ở chỗ: marker = tất cả instanc
-! Session activity: Tức là nó vẫn là "declarative" — người dùng khai báo `#[Domain
-~ Session activity: và nó được truyền ở phần update usecase, từ đã chúng ta đang t
-! Session activity: Đúng rồi. Validation chỉ nhận 1 tín hiệu duy nhất: `$partial =
-~ Session activity: Câu hỏi thực sự: **tại sao field có trong data mà vẫn không mu
-! Session activity: `BusinessInvariantSkipIfPartialAttribute` cũ rename thành `Ski
-! Session activity: Semantic rõ ràng: marker = tĩnh/tuyệt đối, conditional = động/
 
 # ── DEPTH MAP ──────────────────────────────────────
 # When surface isn't enough, this tells agent WHERE to dig.
 # Format: [id] → depth_hint (context)
 
-[c1] → NEEDS_DEEP (10 synapses in brain.db, recall "Session activity: ->setFilters(['id'…")
-[c23] → NEEDS_DEEP (8 synapses in brain.db, recall "found (anthropic_api_key,…")
-[c24] → NEEDS_DEEP (12 synapses in brain.db, recall "Error: to sufficiently increase…")
-[c25] → NEEDS_DETAIL (9 total synapses, recall "Session activity: | **403** |…")
-[e3] → NEEDS_DETAIL (8 total synapses, recall "chạy gg thống kê qua JSON account hay…")
-[e4] → NEEDS_DETAIL (7 total synapses, recall "check giúp mình")
+[c1] → NEEDS_DEEP (13 synapses in brain.db, recall "Session activity: lại ngu nữa, $user =…")
+[c2] → NEEDS_DEEP (10 synapses in brain.db, recall "Session activity: ->setFilters(['id'…")
+[c24] → NEEDS_DEEP (8 synapses in brain.db, recall "found (anthropic_api_key,…")
+[e3] → NEEDS_DETAIL (7 total synapses, recall "check giúp mình")
+[c26] → NEEDS_DEEP (7 synapses in brain.db, recall "Session activity: curl --location…")
 
 # ── META ───────────────────────────────────────────
 # Stats for agent to gauge brain richness
 
 coverage: 0.01
 staleness: 0.1
-last_consolidation: 2026-06-03T08:24:36
-top_entities: [Error:, Session, TODO:, Quân, laji]
+last_consolidation: 2026-06-04T04:25:04
+top_entities: [User, Error:, TODO:, Quân, laji]

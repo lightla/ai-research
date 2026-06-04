@@ -26,6 +26,48 @@ Local MCP tools gồm:
 - `handoff`
 - `forget`
 
+## Kỹ thuật từ source code
+
+### Fluent API — UX tốt nhất trong nhóm
+SDK (`packages/sdk/src/retaindb.ts`) dùng method chaining:
+
+```typescript
+// Manual
+const { context } = await db.user(userId).getContext(query)
+await db.user(userId).remember(message)
+
+// Auto (retrieve → inject → generate → store)
+const turn = await db.user(userId).runTurn({
+  messages,
+  generate: (ctx) => llm.chat(ctx),
+  waitForMemoryWrite: true,
+})
+```
+
+### WriteQueue — Non-blocking write
+- Async memory writes với max 2 retries
+- `waitForMemoryWrite: true` là opt-in — mặc định không block response
+
+### Typed Memory Events
+```typescript
+type MemoryType = "factual" | "preference" | "event" | "goal"
+               | "instruction" | "relationship" | "opinion"
+```
+
+### Agent Event Logging
+```typescript
+db.agent(agentId).event({
+  type: "decision" | "constraint" | "outcome",
+  content: "...",
+})
+```
+
+### Handoff Pattern
+```typescript
+const shareId = await db.agent(agentId).handoff()
+// Agent khác dùng shareId để nhận context
+```
+
 ## Cơ chế thực tế đáng chú ý
 - `context_pack` gom memory + files + code map + compressed tool output thành một pack nhỏ.
 - `context_delta` chỉ trả phần thay đổi so với pack trước đó.
@@ -46,6 +88,10 @@ Local MCP tools gồm:
 - Có cả cơ chế reader lẫn writer khá rõ
 
 ## Giới hạn
+- **Không có offline mode thật**: phụ thuộc external API cho mọi operation
+- **Không có consolidation**: chỉ là retrieve + generate, không có memory evolution
+- **`runTurn`** **không streaming**: muốn real-time output phải dùng manual mode + separate streaming call
+- **Không có memory boundary**: không phân tách global/local project
 - Tối ưu hơn cho local-agent workflow so với product-memory generic
 - Nặng tính file-oriented hơn là JSON memory schema thuần
 
