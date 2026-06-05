@@ -4,8 +4,12 @@
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/A-mem" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/MemOS" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/Memori" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/OpenViking" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/ReMe" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/RetainDB" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/SimpleMem" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/TencentDB-Agent-Memory" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/Understand-Anything" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/agentmemory" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/byterover-cli" vcs="Git" />
@@ -18,6 +22,7 @@
     <mapping directory="$PROJECT_DIR$/refs/mem0" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/neural-memory" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/retaindb-hermes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/sqlite-ai" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/superpowers" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/zep" vcs="Git" />
   </component>
