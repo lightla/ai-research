@@ -65,6 +65,6 @@ storage_mechanisms:
 principles:
   - "User quyết định lưu gì, không phải agent"
   - "Pull khi cần, không inject tự động vào session start"
-  - "orient() để biết có gì — focus/recall để lấy gì cụ thể"
-  - "guide() gọi 1 lần — orient() gọi khi cần context project"
+  - "context() để biết có gì — focus/recall để lấy gì cụ thể"
+  - "guide() gọi 1 lần — context() gọi khi cần context project"
   - "Hôm nay làm gì là do user quyết định, không phải session trước để lại"

@@ -20,6 +20,7 @@
     <mapping directory="$PROJECT_DIR$/refs/icm" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/letta-code" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/mem0" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/memweave" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/neural-memory" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/retaindb-hermes" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/sqlite-ai" vcs="Git" />

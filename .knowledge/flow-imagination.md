@@ -137,7 +137,7 @@ Project `taskr` — ứng dụng quản lý task. Ngày 1 bắt đầu, ngày 4 
     ← user không biết mình muốn làm gì cụ thể, hoặc đơn giản muốn orient
 
 🧠  Agent thấy user muốn tiếp tục nhưng chưa rõ context
-    → quyết định gọi smem.orient()   ← agent tự pull, không bị ép
+    → quyết định gọi smem.context()   ← agent tự pull, không bị ép
 
 🔧  smem trả về:
     spine: [
@@ -285,5 +285,5 @@ Chi phí duy nhất: agent tốn token khi viết YAML vào pending.yml — như
 | Session summary             | 1 lần               | haiku / flash | \~\$0.002             |
 | Spine rebuild               | 0–1 lần             | haiku / flash | \~\$0.005             |
 | **Tổng background LLM**     | <br />              | <br />        | **\~\$0.015/session** |
-| orient(), focus(), recall() | bao nhiêu cũng được | không LLM     | **\$0**               |
+| context(), focus(), recall() | bao nhiêu cũng được | không LLM     | **\$0**               |
 | wake\_up inject             | mỗi session         | không LLM     | **\$0**               |

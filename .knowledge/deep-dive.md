@@ -1154,6 +1154,85 @@ Agent không cần biết provider bên dưới là gì
 
 ---
 
+### Từ TencentDB — Offline Vector Search: sqlite-vec + Local GGUF (★★★★★)
+
+**Pattern học được:**
+
+```
+Embedding pipeline có fallback chain:
+  1. Try local GGUF model (embeddinggemma-300m, 300MB, node-llama-cpp)
+  2. If model not ready → fallback to FTS5 keyword-only
+  3. Never block on embedding failure
+
+Storage: SQLite + sqlite-vec extension
+  → vector similarity search thuần SQL, không cần external vector DB
+  → offline hoàn toàn, không cần API call
+
+Warmup async: model load background, không block first request
+  → first conversation có thể chậm hơn nếu model đang download
+```
+
+**Tại sao quan trọng:** Đây là missing piece trong smem design. Vector search offline-capable là yêu cầu nhưng chưa có implementation plan. TencentDB đã proven pattern này: sqlite-vec + local GGUF.
+
+**Học gì:** smem cần chọn embedding model local (fastembed ONNX hoặc GGUF nhỏ ~100-300MB). sqlite-vec là extension tốt nhất cho SQLite vector search. Fallback về FTS5 nếu embedding unavailable — không crash, không báo lỗi, chỉ giảm recall.
+
+---
+
+### Từ ReMe — `when_to_use` field (★★★★)
+
+**Pattern học được:**
+
+```python
+MemoryNode:
+  content: str       # nội dung memory
+  keywords: list     # cho BM25 search
+  when_to_use: str   # "dùng khi agent cần hiểu auth flow"
+```
+
+`when_to_use` khác với `keywords`:
+- `keywords` → BM25 lexical match ("postgresql", "database")
+- `when_to_use` → semantic usage context ("dùng khi quyết định storage layer")
+
+**Tại sao quan trọng:** Agent không chỉ cần tìm memory theo keyword — cần biết memory nào phù hợp với *tình huống hiện tại*. `when_to_use` là pre-computed hint giúp agent quyết định dùng memory nào mà không cần full recall.
+
+**Học gì:** Thêm `when_to_use` vào YAML schema của smem. Optional field, agent điền khi store. smem dùng field này trong context()/focus() để rank memory theo relevance với current task.
+
+---
+
+### Từ memweave — Temporal Decay Formula + Graceful Degradation (★★★★)
+
+**Pattern học được:**
+
+```python
+# Temporal decay — đã validate trên LongMemEval-S
+lambda_ = math.log(2) / half_life_days
+decay = math.exp(-lambda_ * age_days)
+
+# half_life_days theo type:
+decision    → infinity  (không decay)
+preference  → infinity  (không decay)
+event       → 21 ngày   (bán phân rã sau 3 tuần)
+fact        → 60 ngày
+error_resolved → 30 ngày
+
+# Graceful degradation
+try:
+    vector_results = embed_and_search(query)
+except EmbeddingError:
+    vector_results = []  # không crash
+    # FTS5 results vẫn được trả về
+final = bm25_results + vector_results  # merge, dedupe
+
+# Embedding cache
+cache[sha256(content)] = vector  # tránh re-embed cùng content
+```
+
+**Tại sao quan trọng:** Formula đơn giản, đã được validate benchmark (97.24% recall). Không cần tự tính. Graceful degradation là must-have cho offline-capable system.
+
+**Học gì:** Dùng formula này cho `decay_rate` thay vì tự design. Implement embedding cache từ đầu — cheap optimization lớn. Fallback BM25-only khi embedding fail — không báo lỗi với user.
+
+---
+
 ### Self-Describing Orientation Tool — `smem orient` (★★★★★)
 
 **Vấn đề không ai giải quyết:**
@@ -1171,7 +1250,7 @@ Tất cả các hệ hiện tại đều **query-first** — agent phải biết
 Agent gọi một tool duy nhất và nhận về toàn bộ orientation cần thiết. Tool **tự mô tả chính nó** — guide được sinh từ trạng thái thực của project, không phải văn bản cứng trong docs:
 
 ```typescript
-smem.orient(project_id) → {
+smem.context(project_id) → {
   spine: [
     { slug: "architecture-overview", summary: "Hybrid storage, global+local bank", count: 12, freshness: "2d" },
     { slug: "auth-decisions",        summary: "JWT, refresh token strategy",        count: 5,  freshness: "5d" },
@@ -1202,7 +1281,7 @@ smem.orient(project_id) → {
 
 3. **Usage guide gắn với trạng thái thực.** Không phải docs tĩnh trong CLAUDE.md — guide phản ánh đúng tools đang available và cách dùng theo context hiện tại.
 
-4. **Không blocking, không LLM call.** Spine được pre-computed background, `orient` chỉ đọc cache + format. Sub-20ms.
+4. **Không blocking, không LLM call.** Spine được pre-computed background, `context` chỉ đọc cache + format. Sub-20ms.
 
 **Cơ chế sinh Spine:**
 
@@ -1225,7 +1304,7 @@ smem pin "architecture-overview" --summary "Hybrid storage model, quyết địn
 ```
 Pinned topics luôn xuất hiện trong spine dù memory count thấp.
 
-**Phân biệt `orient` và `wake_up`:**
+**Phân biệt `context` và `wake_up`:**
 
 ```
 wake_up  (platform fires, agent không biết):
@@ -1242,9 +1321,9 @@ orient   (agent chủ động gọi):
 
 Hai cơ chế không thay thế nhau — chúng bổ sung nhau:
 - `wake_up` = passive hydration (always on)
-- `orient` = active navigation (on demand)
+- `context` = active navigation (on demand)
 
-**Học gì:** Smart Memory phải có `orient` như first-class tool trong API surface. Đây không phải nice-to-have — đây là cơ chế để agent **biết cách dùng và tin dùng** memory. Thiếu `orient`, agent sẽ bỏ qua memory sau 2-3 session không thấy giá trị.
+**Học gì:** Smart Memory phải có `context` như first-class tool trong API surface. Đây không phải nice-to-have — đây là cơ chế để agent **biết cách dùng và tin dùng** memory. Thiếu `context`, agent sẽ bỏ qua memory sau 2-3 session không thấy giá trị.
 
 ---
 
@@ -1261,7 +1340,7 @@ Spine phẳng có hai failure mode đối lập:
 Thêm tier trung gian (L1 mapping) để giải quyết granularity là sai hướng — nó thêm complexity mà không thêm capability. Kết quả tương đương đạt được đơn giản hơn:
 
 ```
-orient()               → spine (5–8 topics) + last_session + usage_guide
+context()               → spine (5–8 topics) + last_session + usage_guide
 focus('architecture')  → memories trong topic (trực tiếp, BM25+vector)
 recall(query)          → cross-topic search
 ```
@@ -1312,7 +1391,7 @@ Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên,
 | **UUID project_id trong local config** | PURPOSE.md | Tiêu chí "ổn định": chống path drift |
 | ~~**wake_up / context_pack**~~ | ~~ICM~~ | ~~Bị loại — xem [decision](.decisions/no-wakeup-injection.md)~~ |
 | **smem.guide() — cross-agent bootstrap** | — | Agent mới (bất kỳ loại nào) gọi 1 tool → self-onboard; `smem install` inject 1 dòng vào config file của agent để trigger |
-| **smem.orient() — project context on demand** | — | Agent tự pull khi user cần orient, không inject tự động; tách biệt với guide() |
+| **smem.context() — project context on demand** | — | Agent tự pull khi user cần orient, không inject tự động; tách biệt với guide() |
 | **Memory Versioning (supersedes[])** | agentmemory | Không mất history khi consolidate |
 | **Typed Memory (type field)** | RetainDB | Filter chính xác, không interpret từ content |
 | **Global/Local Bank Isolation** | Hindsight | Tiêu chí "layer rõ": project boundary thực sự |
@@ -1360,6 +1439,13 @@ Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên,
 | **SKILL.md bootstrap prompt** | Superpowers | Dynamic behavior definition, thay vì hardcode |
 | **Feedback correction loop** | ICM | Học từ AI prediction sai |
 | **Merge wizard** | PURPOSE.md | Nâng local pattern lên global có chủ đích |
+| **sqlite-vec + local GGUF fallback** | TencentDB | Offline vector search: GGUF model local, fallback FTS5 khi model chưa ready |
+| **`when_to_use` field** | ReMe | Semantic hint cho agent biết dùng memory này trong tình huống nào — khác với keywords (BM25) |
+| **JSONL per ngày** | ReMe | Partition tự nhiên theo thời gian, dễ archive, source of truth là file |
+| **Temporal decay formula** | memweave | `exp(-ln(2)/half_life_days × age_days)` — đã validate, dùng luôn |
+| **Embedding cache (hash→vector)** | memweave | Tránh re-embed cùng content, cheap optimization |
+| **Graceful degradation** | memweave, TencentDB | Embedding fail → fallback BM25-only, không crash |
+| **Semantic triples (subject-predicate-object)** | Memori | Lưu relation chặt hơn free-form text, query được theo subject/predicate |
 
 ### Tier 4 — Không làm (anti-pattern)
 

@@ -73,6 +73,11 @@ Hướng hợp lý nhất là một hệ hybrid, nhưng tối giản:
 | **cognee** | 15+ strategies, auto-route (TRIPLET, GRAPH, RAG...) | Versioning + provenance, UUID5 dedup | version + ontology_valid | Không native (gọi improve()) | Có (SQLite + LanceDB local) | Ladybug/Neo4j + LanceDB + SQLite |
 | **ByteRover** | BM25 (MiniSearch) + vector, 4-tier cache | Dream background (consolidate/prune) | Không (archive + ghost stubs) | Hooks: UserPromptSubmit, BeforeToolUse, Stop | Có (file-based) | File DAG + Sidecar signals |
 | **Letta-code** | Vector (API) + FTS (local+API), hybrid | Agent self-edits memory blocks | Git-backed MemFS (full history) | 11 hooks: Pre/PostToolUse, SessionStart/End, Stop | Có (local backend) | MemFS (git) + server DB |
+| **TencentDB** | FTS5 + sqlite-vec (local GGUF embed) | LLM iterative L1→L2→L3 pipeline | priority(0-100) + timestamps[] | agent_end/before_prompt_build (tự động) | Có (SQLite + GGUF local) | SQLite + sqlite-vec + JSONL |
+| **ReMe** | SQLite-vec + BM25 | Background summarization async | ref_memory_id provenance | Manual hook (pre_reasoning_hook) | Có (JSONL files + SQLite) | JSONL per ngày + SQLite-vec |
+| **memweave** | BM25 (FTS5) + sqlite-vec, MMR rerank | Không có | Temporal decay (exp formula) | Không native | Có (Markdown files + SQLite) | Markdown source + SQLite derived |
+| **Memori** | Vector embeddings + semantic triples | Không có | Không có | Intercept LLM client calls | Có (BYODB local) | Rust + PostgreSQL/custom |
+| **SimpleMem** | Hybrid (LLM-based extraction) | EvolveMem iterative tuning | Không có | Không native | Không rõ | LLM-dependent |
 
 ## Gap Analysis — Cái chưa ai làm tốt
 
@@ -383,6 +388,50 @@ Pipeline học của nó dựa trên tính kỷ luật cưỡng chế quy trình
 - Một cách tiếp cận thuần túy về mặt quy trình và hành vi, tập trung kiểm soát "cách Agent suy nghĩ và thực thi" thay vì "cách Agent lưu trữ dữ liệu".
 - Tạo ra một baseline cực kỳ vững chắc cho lớp Workflow/Process Layer của Agent.
 
+
+### `TencentDB-Agent-Memory`
+- Có hỗ trợ 4-tier pipeline tự động hoàn toàn: L0 capture → L1 extract → L2 scene → L3 persona
+- Có hỗ trợ offline hoàn toàn: local GGUF embedding (embeddinggemma-300m), fallback FTS5
+- Có hỗ trợ smart dedup: cosine + keyword overlap vs top-5 candidates trước khi store
+- Có hỗ trợ priority field (0-100) và timestamps array cho merge history
+- Không thấy hỗ trợ user-triggered storage — toàn bộ capture tự động qua hooks
+- "Mermaid symbolic STM" thực ra là context offload layer tùy chọn, không phải core memory
+
+### `ReMe`
+- Có hỗ trợ memory as JSONL files (1 message/line, per ngày), source of truth là file
+- Có hỗ trợ `when_to_use` field — semantic hint cho agent biết khi nào dùng memory này
+- Có hỗ trợ `ref_memory_id` — link ngược về raw message gốc, giữ provenance
+- Có hỗ trợ 4 memory types: PERSONAL/PROCEDURAL/TOOL/IDENTITY
+- Không thấy hỗ trợ auto-capture — hook phải gọi thủ công
+- Cross-agent sharing là afterthought, không có design pattern rõ
+
+### `memweave`
+- Có hỗ trợ Markdown files là source of truth, SQLite là derived index có thể rebuild
+- Có hỗ trợ temporal decay thực sự: `exp(-ln(2)/half_life_days × age_days)`
+- Có hỗ trợ MMR reranking (Jaccard similarity + greedy selection)
+- Có hỗ trợ graceful degradation: fallback BM25-only nếu embedding unavailable
+- Có hỗ trợ embedding cache (hash → vector, tránh re-embed)
+- Không thấy hỗ trợ cross-agent design hay project boundary
+- Không thấy hỗ trợ guide/orient navigation layer
+
+### `Memori`
+- Có hỗ trợ Rust core + PyO3 — performance tốt nhất trong nhóm
+- Có hỗ trợ semantic triples (subject-predicate-object) cho knowledge graph
+- Có hỗ trợ intercept LLM client calls tự động (7 providers)
+- Có hỗ trợ BYODB offline mode
+- LoCoMo benchmark: 81.95% accuracy, 4.97% token footprint
+- Không thấy hỗ trợ user-triggered storage — capture tự động
+- 4 categories thực tế (không phải 7 như claim)
+
+### `SimpleMem`
+- Có hỗ trợ EvolveMem — iterative retrieval tuning dựa trên failure analysis
+- Có hỗ trợ MCP integration đầy đủ (8 tools)
+- Không thấy hỗ trợ "30x token reduction" — claim vô căn cứ, không có benchmark trong code
+- Không thấy hỗ trợ offline mode rõ ràng
+
+### `sqlite-ai`
+- Là SQLite extension cho LLM inference (llama.cpp), không phải memory system
+- Không liên quan đến memory design — nhầm với sqlite-sync (CRDT repo khác)
 
 ## Khuyến nghị cho hệ riêng của bạn
 Nếu mục tiêu là build solution riêng, mình sẽ giữ hệ rất gọn:

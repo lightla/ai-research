@@ -42,7 +42,7 @@ Khi user nói "tiếp tục" hoặc "làm X", agent tự quyết định gọi t
 
 ```
 User: "tiếp tục"
-→ Agent thấy context chưa rõ → tự gọi smem.orient()
+→ Agent thấy context chưa rõ → tự gọi smem.context()
 → Thấy spine + open-loops → hỏi user muốn làm cái nào
 → User chọn → agent gọi smem.focus(topic) hoặc recall(query)
 → Có đúng context cần → làm việc
@@ -71,11 +71,11 @@ User: "làm payment module"
 Tool description trong MCP metadata không đủ — giới hạn độ dài, không có ví dụ, agent mới không biết flow.
 
 Cần một tool riêng: **`smem.guide()`** — agent gọi một lần khi chưa biết smem là gì.  
-Khác với `orient()` (project context dynamic), `guide()` trả về hướng dẫn sử dụng tĩnh lưu ở `~/.smart-memory/agent-guide.yml`.
+Khác với `context()` (project context dynamic), `guide()` trả về hướng dẫn sử dụng tĩnh lưu ở `~/.smart-memory/agent-guide.yml`.
 
 ```
 smem.guide()   → dạy agent CÁCH dùng smem (system-level, gọi 1 lần)
-smem.orient()  → cho agent biết project đang có GÌ (project-level, gọi khi cần)
+smem.context()  → cho agent biết project đang có GÌ (project-level, gọi khi cần)
 ```
 
 Content của guide được lưu trong file riêng, user có thể chỉnh sửa nếu cần.
