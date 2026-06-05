@@ -5,9 +5,9 @@
 # ═══════════════════════════════════════════════════
 ---
 brain: default
-updated: 2026-06-04T04:25:04
-neurons: 2660
-synapses: 12295
+updated: 2026-06-05T06:31:44
+neurons: 3011
+synapses: 12845
 token_budget: 1200
 depth_available: [surface, detail, deep]
 ---
@@ -17,28 +17,27 @@ depth_available: [surface, detail, deep]
 # Agent: scan this section to understand the knowledge landscape.
 # Format: [id] content (type) {p:N} →edge→ [target_id_or_text]
 
-[c24] found (anthropic_api_key, gemini_api_key, openrouter_api_key, minimax_api_key,… (concept) {p:5}
-  →co_occurs→ "found (anthropic_api_key, gemini_api_key,…"
-
-[c25] Session activity: | **403** | Forbidden | Đã đăng nhập nhưng không có quyền |… (concept) {p:5}
-  →has_value→ "**401 vs 403** — ranh giới rõ = - 401 = *"Tôi không biết…"
-  →involves→ "**401 vs 403** — ranh giới rõ = - 401 = *"Tôi không biết…"
+[c22] Session activity: | **403** | Forbidden | Đã đăng nhập nhưng không có quyền |… (concept) {p:5}
   →related_to→ "forbidden đăng"
   →involves→ "CoreServiceExceptionHandler"
-  →involves→ "DomainMessageException"
 
 [e3] check giúp mình (entity) {p:5}
-  →co_occurs→ "col_4: hay redirect sai? redirect=/todo cũng ko được luôn…"
-  →co_occurs→ "col_3: hay trang blank"
+  →co_occurs→ "col_5: chứ todo k được Cần xem lỗi cụ thể. Bạn check giúp…"
   →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
 
 [e4] thấy lỗi gì cụ thể khi truy cập URL đó (entity) {p:5}
-  →co_occurs→ "col_4: hay redirect sai? redirect=/todo cũng ko được luôn…"
-  →co_occurs→ "col_3: hay trang blank"
+  →co_occurs→ "col_5: chứ todo k được Cần xem lỗi cụ thể. Bạn check giúp…"
   →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
   →co_occurs→ [e3] "check giúp mình"
 
-[c26] Session activity: curl --location --request GET… (concept) {p:5}
+[c23] Session activity: curl --location --request GET… (concept) {p:5}
+  →related_to→ "Session activity: ssh -R 80:localhost:3000 localhost.run #…"
+  →co_occurs→ "Session activity: MINIO_ENDPOINT=https://hcm04.vstorage.vng…"
+
+[c24] Claude (concept) {p:5}
+  →co_occurs→ "only use in isolated environments"
+  →co_occurs→ "change mode"
+  →co_occurs→ "Tab"
 
 [c1] Session activity: lại ngu nữa, $user = getUser()?:User  ; … (concept) {p:6}
   →co_occurs→ "Session activity: sao lại báo lỗi trong…"
@@ -46,7 +45,6 @@ depth_available: [surface, detail, deep]
   →involves→ "đã giờ cần sửa lại này"
 
 [c2] Session activity: ->setFilters(['id' => $id]) ->setFields((array)… (concept) {p:6}
-  →involves→ "IAMModuleRegistration"
   →involves→ "ControllerMethodSpec"
 
 # ── CLUSTERS ───────────────────────────────────────
@@ -55,24 +53,23 @@ depth_available: [surface, detail, deep]
 
 @error: [054eb4b0-77b7-4a05-b2d6-949ef7cdc051, 08359ce8-642c-4c84-9fa1-9a365ad892fa] "Error: to parse dotenv file"
 @todo: [068b2184-9a51-4e30-9792-4b1550085d7f, 06af5c95-d57e-4a0c-944c-33f840c87f4c] "TODO: be complete for this condition to "
-@lại: [07b20fb8-c2d0-40a4-b358-04f7bb73d60d, 0bb42db5-4de0-4513-8889-bdc6f2d29fa9] "lại thông tin đó vào"
-@error: [00b1867d-9642-466f-ab0d-747c5b724554, 0c2901be-d638-42f8-8e9d-74f6d7d1ad8f] "Error: switching to `withunencryptedcook"
-@check: [99e93202-0065-4975-9ce5-53b9e5da7b67, b1350586-bb1d-48b4-8aed-f7a74b28e4c1] "check giúp mình, thấy lỗi gì cụ thể khi truy cập URL đó"
+@thấy: [99e93202-0065-4975-9ce5-53b9e5da7b67, b1350586-bb1d-48b4-8aed-f7a74b28e4c1] "thấy lỗi gì cụ thể khi truy cập URL đó, check giúp mình"
+@muốn: [091964a1-c8ae-45ad-9aa4-70c63fb01199, 1187fd66-737d-4903-abba-efd5f0161438] "muốn, mở file đọc thử xem đã đúng"
 
 # ── SIGNALS ────────────────────────────────────────
 # Active alerts, unresolved items, pending decisions.
 # Agent: check this FIRST each session for urgent context.
 
-! User wants 'claude --yolo' as a shortcut/alias for 'claude --dangerously-skip-pe
-~ User wants 'agy --yolo' as a shortcut/alias for 'agy --dangerously-skip-permissi
-! Session activity: public string $accessToken, public string $refreshToken, publi | Session…
-! Session activity: 'access_expires_in'  => $refreshed->expiresInSeconds, 'refresh
-! Session activity: <command-message>login</command-message> <command-args></comma
-! Session activity: return $expiresAt !== '' && Carbon::parse($expiresAt)->lessTha | Session…
-! Session activity: Thực ra root cause là: **trans field nên được xem là atomic ha
-~ Session activity: - **Validation**: cần biết data có đầy đủ không - **Change tra
-! Session activity: Đúng — đây là case cụ thể: - **Create**: `trans` gửi lên, bắt
-! Session activity: Khác với marker interface thuần ở chỗ: marker = tất cả instanc
+! thêm với current thì dùng scope() register cho mình
+! Session activity: Tôi chọn **`Current` prefix** — vì: - `CurrentAuthContext` đọc
+~ Session activity: | `AuthContextCarrier` | Ít phổ biến | Tôi chọn **`Current` prefix** — vì: -…
+! [_structured:key_value, activity authcontextcarrier, authcontextcarrier, authcontextcarrier ít,…
+! Session activity: | `AuthContextHolder` | Java-style, ít tự nhiên trong PHP | |…
+! [_structured:key_value, activity authcontextholder, authcontextcarrier, authcontextholder,…
+! Session activity: | `AuthContextHolder` | Java-style, ít tự nhiên trong PHP | |…
+! [_structured:key_value, activity authcontextholder, authcontextcarrier, authcontextholder,…
+! Session activity: | `AuthContextState` | Suffix "State" = rõ là mutable state | |…
+! [_structured:key_value, authcontextcarrier, authcontextholder, authcontextstate, currentauthcontext]
 
 # ── DEPTH MAP ──────────────────────────────────────
 # When surface isn't enough, this tells agent WHERE to dig.
@@ -80,14 +77,16 @@ depth_available: [surface, detail, deep]
 
 [c1] → NEEDS_DEEP (13 synapses in brain.db, recall "Session activity: lại ngu nữa, $user =…")
 [c2] → NEEDS_DEEP (10 synapses in brain.db, recall "Session activity: ->setFilters(['id'…")
-[c24] → NEEDS_DEEP (8 synapses in brain.db, recall "found (anthropic_api_key,…")
-[e3] → NEEDS_DETAIL (7 total synapses, recall "check giúp mình")
-[c26] → NEEDS_DEEP (7 synapses in brain.db, recall "Session activity: curl --location…")
+[c22] → NEEDS_DEEP (9 synapses in brain.db, recall "Session activity: | **403** |…")
+[e3] → NEEDS_DEEP (7 synapses in brain.db, recall "check giúp mình")
+[e4] → NEEDS_DETAIL (7 total synapses, recall "thấy lỗi gì cụ thể khi truy cập URL đó")
+[c23] → NEEDS_DEEP (7 synapses in brain.db, recall "Session activity: curl --location…")
+[c24] → NEEDS_DETAIL (8 total synapses, recall "Claude")
 
 # ── META ───────────────────────────────────────────
 # Stats for agent to gauge brain richness
 
 coverage: 0.01
-staleness: 0.1
-last_consolidation: 2026-06-04T04:25:04
-top_entities: [User, Error:, TODO:, Quân, laji]
+staleness: 0.08
+last_consolidation: 2026-06-05T06:31:44
+top_entities: [email_empty, laji, Error:, Session, TODO:]

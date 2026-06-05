@@ -1,4 +1,4 @@
-# Deep Learning — Nền Tảng Thiết Kế Smart Memory
+# Deep Dive — Nền Tảng Thiết Kế Smart Memory
 
 Tài liệu này chắt lọc những ý tưởng hay nhất từ toàn bộ refs để làm nền tảng tham khảo cho tool **Smart Memory**. Không phải tổng hợp mô tả — mà là extraction có chọn lọc: cái gì đáng kế thừa, cái gì cần vứt.
 
@@ -19,6 +19,197 @@ Hai ràng buộc cứng thêm vào:
 
 - **JSON là single source of truth** — mọi read/write đều qua structured record, không qua raw markdown
 - **Wrapper/proxy layer bắt buộc** — agent không bao giờ đọc file thô trực tiếp; tool đọc thay, scope thay, nén thay
+
+---
+
+## Hook Design — Nguyên Tắc Không Lạm Dụng
+
+### Vấn đề của ICM (anti-pattern)
+
+ICM yêu cầu agent thực hiện ceremony thủ công trước mọi hành động:
+```
+SessionStart → ToolSearch (load deferred tools)
+             → icm_wake_up()          ← LLM turn #1
+             → icm_memory_recall()    ← LLM turn #2
+             → (mới được làm việc)
+             → icm_memory_store()     ← sau mọi decision/error/preference/20 tool calls
+```
+
+**3 lỗi thiết kế:**
+1. **Hooks là agent-side ceremony, không phải platform-side automation.** Agent phải nhớ gọi. Nếu quên → context mất. Nếu nhớ → 2-4 extra round trips trước khi làm việc.
+2. **SessionStart blocking.** User hỏi một câu đơn giản → agent phải chạy ceremony xong mới trả lời.
+3. **Trigger quá nhiều.** Mọi decision, preference, error resolved, >20 tool calls → phải store. Agent lo lắng "mình có nên store không?" thay vì làm việc.
+
+---
+
+### Thiết kế đúng: Platform-Side, Transparent, Async
+
+**Nguyên tắc cốt lõi: Agent không biết hooks tồn tại.**
+
+```
+SessionStart hook (platform fires):
+  platform đọc pre-computed wake_up cache (file, <10ms)
+  inject trực tiếp vào system prompt như extra context
+  → agent thấy context có sẵn, không gọi gì
+  → 0 LLM calls, 0 agent round trips
+
+PostToolUse hook (platform fires, async):
+  platform nhìn tool + output
+  nếu signal thấp → bỏ qua (return ngay)
+  nếu signal cao → enqueue background job (return ngay)
+  background job: extract + store + update wake_up cache
+  → agent KHÔNG chờ, tiếp tục làm việc ngay
+
+Stop hook (platform fires sau khi agent respond):
+  user đã nhận response rồi → trigger background summarize
+  → 0ms overhead cho user
+```
+
+### Signal Filter — Không Capture Mọi Thứ
+
+```
+Capture (signal cao):
+  Tool = Edit/Write + file content dài          → likely có decision
+  Tool = Bash + output > 500 chars + no error   → likely có kết quả có nghĩa
+  Tool = Bash + output chứa error message       → potential "error resolved"
+  User message chứa "quyết định", "chọn", "dùng X thay vì Y"
+
+Bỏ qua (signal thấp):
+  Tool = Read (thụ động, không tạo knowledge)
+  Tool = Glob / Grep / LS (search thuần)
+  Tool = Bash output rỗng hoặc < 50 chars
+  Cùng tool call lặp lại trong 60 giây
+  Tool = TodoRead, TodoWrite
+```
+
+### Wake_up Pre-computation — Không On-Demand
+
+```
+SAI (ICM style):
+  SessionStart → agent gọi icm_wake_up → LLM turn → result → inject
+
+ĐÚNG:
+  Mỗi khi memory thay đổi (PostToolUse/Stop hook) →
+    background job rebuild wake_up cache file
+  SessionStart → platform đọc cache → inject vào system prompt
+  → Sub-10ms, không LLM call, agent không thấy gì
+```
+
+### Blocking vs Non-blocking
+
+```
+Non-blocking (fire and forget):
+  PostToolUse, Stop, SessionEnd → background queue
+  Nếu queue fail → memory bị miss nhưng không crash session
+
+Blocking chỉ khi bắt buộc:
+  SessionStart inject → blocking nhưng từ cache (< 10ms, chấp nhận được)
+  Permission check → blocking nhưng binary yes/no (< 50ms)
+  
+KHÔNG bao giờ blocking trên đường write thông thường.
+```
+
+### Background Job Làm Gì — Nguồn Dữ Liệu Thực Tế
+
+Background job nhận 2 nguồn, không phải raw prompt:
+
+**Nguồn 1 — Hook payload (structured, có ngay):**
+```json
+{
+  "tool_name": "Edit",
+  "tool_input": { "file": "src/auth.ts", "old_string": "user.id", "new_string": "user?.id" },
+  "tool_response": "File edited successfully"
+}
+```
+
+**Nguồn 2 — Transcript file (agent ghi ra disk):**
+```
+~/.claude/projects/<hash>/transcripts/<session>.jsonl
+```
+Daemon đọc N messages gần nhất để lấy ngữ cảnh xung quanh tool call.
+
+**Process:**
+```
+hook payload + transcript context
+    ↓
+Signal check (không LLM): tool nào? output có nghĩa không?
+    ↓ nếu signal cao
+LLM extract (cheap model, nhỏ):
+  "Given this edit/bash/write and conversation, what was decided/fixed/learned?"
+    ↓
+Store structured record (KHÔNG store raw):
+  { type: "error_resolved", content: "...", keywords: [...] }
+```
+
+**Ví dụ extract:**
+
+| Raw input vào LLM | Memory được store |
+|---|---|
+| Edit auth.ts: `user.id → user?.id` + "fix null check" | `{ type: "error_resolved", content: "Fix null pointer bug user?.id trong auth.ts" }` |
+| Bash output: chạy test pass + "xong rồi" | `{ type: "event", content: "Tests passing sau khi refactor auth module" }` |
+| User: "từ nay dùng conventional commits" | `{ type: "preference", content: "Conventional commits: feat/fix/chore/..." }` |
+
+---
+
+### Adapter per Agent — Nhận Biết Agent Đang Chạy
+
+Mỗi agent có hook system, transcript format, config path riêng. Cần adapter layer:
+
+```
+Agent (Claude Code / Codex / Antigravity / Gemini CLI / ...)
+  │  fires hook (format riêng)
+  ▼
+Adapter (claude-code / codex / antigravity / ...)
+  │  translate → AgentEvent (normalized)
+  ▼
+Daemon (agent-agnostic, chỉ xử lý AgentEvent)
+  │  extract + store
+  ▼
+SQLite + wake_up cache
+```
+
+**Normalized AgentEvent:**
+```typescript
+interface AgentEvent {
+  agent: "claude-code" | "codex" | "antigravity" | "gemini-cli" | ...
+  event_type: "tool_use" | "session_start" | "session_end"
+  tool_name?: string
+  tool_input?: any
+  tool_output?: string
+  session_id: string
+  project_path: string
+  timestamp: number
+}
+```
+
+Daemon không quan tâm agent nào. Thêm agent mới = thêm adapter, không sửa daemon.
+
+**Detect agent:**
+```bash
+smem install            # auto-detect: check env vars, process tree, config files
+smem install --agent codex   # explicit
+```
+
+**Fallback cho agents không có hook:**
+- Polling transcript file nếu agent ghi ra disk
+- Wrapper script: `smem-wrap codex` intercept stdin/stdout
+- Manual: `smem store "vừa quyết định dùng SQLite"`
+
+---
+
+### Kết Luận Hook Design
+
+| Thuộc tính | Mục tiêu |
+|---|---|
+| Ai fire hooks | Platform/harness, KHÔNG phải agent |
+| Agent awareness | Zero — agent không biết hooks tồn tại |
+| SessionStart overhead | < 10ms (inject from cache) |
+| PostToolUse overhead | 0ms (enqueue, async) |
+| Trigger criteria | Signal filter — Edit/Write/Bash significant only |
+| Wake_up | Pre-computed cache, rebuild khi memory đổi |
+| Failure mode | Miss memory, không crash session |
+| Multi-agent | Adapter per agent, daemon agent-agnostic |
+| Stored data | Extracted facts, KHÔNG phải raw prompt |
 
 ---
 
@@ -481,6 +672,118 @@ Brainstorm → Spec → Plan → TDD là default workflow bắt buộc.
 
 ---
 
+### Từ Zep — Temporal Fact Model (★★★★★)
+
+**Pattern học được:**
+
+```python
+# Mỗi fact không chỉ có timestamp mà có VALIDITY PERIOD:
+EntityEdge {
+    fact: "User prefers Adidas"
+    valid_at: 2025-01-01        # khi fact bắt đầu đúng
+    invalid_at: 2025-03-15      # khi fact hết hiệu lực
+}
+EntityEdge {
+    fact: "User prefers Puma"
+    valid_at: 2025-03-15
+    invalid_at: None            # vẫn đang đúng
+}
+
+# Query temporal:
+"decisions made in January 2025" → filter WHERE valid_at <= T AND (invalid_at IS NULL OR invalid_at > T)
+"current preferences" → filter WHERE invalid_at IS NULL
+```
+
+**Tại sao quan trọng:** Timestamp đơn thuần chỉ nói "khi nào fact được ghi lại". Temporal validity nói "khi nào fact đúng". Đây là sự khác biệt quan trọng cho agent reasoning: "decision từ tháng 1 vẫn còn valid không?" — không trả lời được với timestamp.
+
+**Học gì:** Smart Memory record phải có `valid_at` + `invalid_at`. Khi memory bị supersede (thay thế), không chỉ mark `superseded_by` mà set `invalid_at = now`. Cho phép time-travel query: "context tại thời điểm T".
+
+---
+
+### Từ Zep — Context Templates (★★★★)
+
+**Pattern học được:**
+
+```python
+# Định nghĩa template một lần, dùng lại nhiều lần:
+template = """
+%{critical_decisions limit=3}
+%{recent_preferences limit=5 types=[PREFERS,HAS_REQUIREMENT]}
+%{open_tasks limit=2}
+"""
+client.create_template(template_id="project-context-v1", template=template)
+
+# Agent chỉ gọi:
+context = get_context(project_id, template_id="project-context-v1")
+# Nhận pre-formatted string, không cần biết internals
+```
+
+**Tại sao quan trọng:** Tách "cách lấy context" khỏi "cách format context". Application code không phụ thuộc vào retrieval logic. Template có thể thay đổi mà không sửa agent code.
+
+**Học gì:** Smart Memory nên có template system per-project. User định nghĩa "profile" của context mà agent sẽ nhận, thay vì hardcode trong CLAUDE.md.
+
+---
+
+### Từ Zep — Contextualized Document Chunking (★★★)
+
+**Pattern học được:**
+
+```python
+# Không chunk raw, mà inject document-level context:
+for chunk in split(document, size=500, overlap=50):
+    context = llm.generate(
+        f"Situate this chunk within the full document: {full_doc_summary}\n\nChunk: {chunk}"
+    )
+    store(f"[Context: {context}]\n\n{chunk}")
+```
+
+**Học gì:** Khi Smart Memory ingest spec/document, contextualize mỗi chunk trước khi store. Cải thiện retrieval accuracy đáng kể vì chunk không còn bị "tách rời" khỏi ngữ cảnh của document.
+
+---
+
+### Từ A-mem — Bidirectional Evolution (★★★★)
+
+**Pattern học được:**
+
+```python
+process_memory(new_note):
+    neighbors = find_similar(new_note, k=5)
+    
+    llm_response = llm.decide({
+        new_note: new_note,
+        neighbors: neighbors,
+        question: "Should I update neighbors based on this new info?"
+    })
+    
+    if "update_neighbor" in llm_response.actions:
+        for neighbor, new_context in zip(neighbors, llm_response.new_contexts):
+            neighbor.context = new_context  # neighbors được update ngược
+            neighbor.tags = new_tags[i]
+```
+
+**Tại sao quan trọng:** Mọi hệ khác (agentmemory, Mem0, ICM) chỉ update forward — memory mới link đến cũ. A-mem là duy nhất update backward — memory mới có thể enrichment/correct memories cũ. Phù hợp với tiêu chí "không nhắc lại": khi biết thêm thông tin, memories cũ được tự động cập nhật.
+
+**Học gì:** Khi store memory, bên cạnh dedup check, thêm "influence check": LLM xem xét liệu memory mới có làm thay đổi ý nghĩa của memories liên quan không. Nếu có → trigger enrichment job (async, không block store). Không làm sync như A-mem vì quá expensive.
+
+---
+
+### Từ A-mem — Semantic Triple: Keywords + Context + Tags (★★★)
+
+**Pattern học được:**
+
+```python
+MemoryNote {
+    content: str           # raw content
+    keywords: List[str]    # semantic concepts (extracted by LLM)
+    context: str           # one-sentence domain/theme summary
+    tags: List[str]        # classification labels
+}
+```
+
+**Học gì:** Smart Memory schema phải enforce 3 fields này. Không để agent tự quyết có điền không. `keywords` → BM25 search. `context` → domain clustering và wake_up filtering. `tags` → type-based recall ("show me all decisions").
+
+---
+
 ### Từ Understand-Anything — Graph Data Model cho Smart Macro-Graph (★★★★★)
 
 **Pattern học được:**
@@ -592,6 +895,251 @@ store = VectorStore.create(config.vector_store_type)
 
 ---
 
+### Từ MemOS — Async-First Store với MemScheduler (★★★★★)
+
+**Pattern học được:**
+```python
+chat(query):
+    response = llm.generate(query)   # return ngay
+    submit_async_task(query, chat_id)  # background
+    # Redis Streams queue → background worker:
+    # extract memories → conflict detection → graph reorg → skill promotion
+    return response
+```
+
+**Tại sao quan trọng:** Tiêu chí "nhanh" — store không được block response. User không đợi embedding + graph update. Mọi enrichment xảy ra background, session sau hưởng lợi.
+
+**Học gì:** Smart Memory `store()` phải return immediately với ID. Background job xử lý: embedding, auto-link, dedup check, consolidation. Dùng queue (Redis/SQLite WAL) thay vì blocking I/O.
+
+---
+
+### Từ MemOS — Size-Bounded Tiers với Auto-Compaction (★★★★)
+
+**Pattern học được:**
+```python
+memory_size = {
+    "WorkingMemory": 20,      # rapid buffer
+    "LongTermMemory": 1500,   # main store
+    "UserMemory": 480,        # compressed prefs
+}
+threshold = 0.80  # trigger compaction
+
+# khi WorkingMemory > 20*0.8=16:
+# → move high-value items to LongTermMemory
+# → consolidate duplicates
+# → trigger GraphStructureReorganizer
+```
+
+**Học gì:** Không để memory accumulate vô hạn mà không có compaction policy. Mỗi tier có size limit + auto-promote/demote. Working buffer nhỏ (20) → filter noise sớm trước khi vào LongTerm.
+
+---
+
+### Từ MemOS — Iterative Retrieval với LLM Judge (★★★)
+
+**Pattern học được:**
+```python
+search(query):
+    results = hybrid_search(query)
+    while not llm.can_answer(query, results):
+        phrases = llm.generate_retrieval_phrases(query, results)
+        results += hybrid_search(phrases)  # expand
+    return synthesize(results)
+```
+
+**Học gì:** Cho `recall_deep` mode: nếu top results không đủ → LLM generate thêm retrieval phrases → search lại. Multi-hop information gathering mà không cần hardcode graph traversal depth.
+
+---
+
+### Từ MemOS — Source-Aware Provenance (★★★★)
+
+**Pattern học được:**
+```python
+SourceMessage {
+    type: "chat"|"doc"|"web"|"file"|"system"
+    role: "user"|"assistant"|"system"
+    content: str  # minimal reproducible snippet (không full conversation)
+}
+# visibility: "private"|"public"|"session"
+```
+
+**Học gì:** Provenance không cần store toàn bộ conversation, chỉ cần reproducible snippet. `visibility` field cho phép fine-grained access: session memories không lộ ra ngoài session.
+
+---
+
+### Từ cognee — UUID5 Deterministic Deduplication (★★★★★)
+
+**Pattern học được:**
+```python
+class Memory(DataPoint):
+    metadata = {"identity_fields": ["topic", "source_session"]}
+    # UUID5(topic + source_session) → same entity = same ID
+    # auto-dedup ở DB layer, không cần similarity check
+```
+
+**Tại sao quan trọng:** Similarity threshold (0.85) có thể false positive (merge distinct memories) hoặc false negative (duplicate với 0.84). UUID5 từ semantic identity fields cho deterministic dedup khi identity rõ.
+
+**Học gì:** Một số memory types có identity rõ (preference, instruction) → dùng UUID5. Types khác không có identity → dùng similarity check. Không áp dụng một approach cho tất cả.
+
+---
+
+### Từ cognee — Auto-Routing Search Strategy (★★★★)
+
+**Pattern học được:**
+```python
+# 15+ strategies, agent không cần chọn:
+SearchType:
+    TRIPLET_COMPLETION     # Subject-Predicate-Object decomposition
+    GRAPH_COMPLETION       # graph traversal + LLM (DEFAULT)
+    GRAPH_COMPLETION_COT   # chain-of-thought
+    TEMPORAL               # time-aware
+    CHUNKS_LEXICAL         # keyword FTS
+    FEELING_LUCKY          # auto-route best
+
+# query_router.py: rule-based classifier
+# "What did I decide last month?" → TEMPORAL
+# "How does auth work?" → GRAPH_COMPLETION_COT
+# "Find exact phrase X" → CHUNKS_LEXICAL
+```
+
+**Học gì:** Agent không nên biết phải dùng search strategy nào. Smart Memory nên có `recall_router` — phân tích query intent → route về strategy phù hợp. Minimal API: `recall(query)`.
+
+---
+
+### Từ cognee — Typed Memory Entries (★★★★)
+
+**Pattern học được:**
+```python
+TraceEntry {
+    origin_function: str     # "handle_button_click"
+    status: "success"|"error"
+    method_params: dict
+    memory_query: str        # "button interactions"
+    memory_context: str      # "onboarding flow"
+}
+SkillRunEntry {
+    selected_skill_id: str
+    success_score: float     # 0-1
+    result_summary: str
+}
+```
+
+**Học gì:** Bên cạnh `factual`, `preference`, `decision`, cần typed entries cho agent interactions: tool execution trace, skill run outcome. Cho phép query: "tất cả tool calls fail gần đây?" hoặc "skill nào có success_score thấp nhất?"
+
+---
+
+### Từ ByteRover — Sidecar Signals (★★★★★)
+
+**Pattern học được:**
+```
+Runtime signals lưu RIÊNG khỏi content:
+  - accessCount, importance (0-100), maturity, recency, updateCount
+
+Tại sao riêng?
+  - Signals thay đổi mỗi query → pollute git history nếu embedded
+  - No merge conflicts trong team
+  - Per-machine ranking khác nhau
+```
+
+**Học gì:** Smart Memory nên có `memory_signals` table riêng, không embed trong `memories` table. Weight, access_count, recency_score → separate store, update without touching content record.
+
+---
+
+### Từ ByteRover — Lane Budgeting (★★★★★)
+
+**Pattern học được:**
+```typescript
+// Allocate token budget theo lanes, không top-N flat:
+lanes = {
+    summaries: 2000,   // hierarchical summaries (d1-d3)
+    contexts: 4000,    // raw context files (d0)
+    stubs: 500         // archive ghost cues
+}
+// Fill each lane highest-score-first đến budget
+```
+
+**Học gì:** `wake_up` nên có lane system thay vì flat top-N: `decisions: 1000 tokens`, `preferences: 500 tokens`, `recent_facts: 500 tokens`. Mỗi lane có budget riêng → không một category nào chiếm hết token budget.
+
+---
+
+### Từ ByteRover — Staleness Detection via Content Hash (★★★★)
+
+**Pattern học được:**
+```typescript
+SummaryFrontmatter {
+    children_hash: string  // SHA-256 of children content
+    // khi children thay đổi → hash mismatch → regenerate summary
+}
+```
+
+**Học gì:** Mọi derived artifact (representation cache, wake_up pack, summary) phải có `children_hash`. Chỉ regenerate khi hash mismatch. Không regenerate theo timer — regenerate theo data change.
+
+---
+
+### Từ ByteRover — 4-Tier Query với Pre-fetch (★★★★)
+
+**Pattern học được:**
+```
+Tier 0 (0ms):    exact cache hit
+Tier 1 (~50ms):  fuzzy cache (Jaccard)
+Tier 2 (~200ms): BM25 search, no LLM
+Tier 3 (~5s):    pre-fetch top 5 → inject vào optimized LLM prompt
+Tier 4 (8-15s):  full agentic loop
+
+Smart routing: nếu Tier 2 score >= 0.7 → pre-fetch → Tier 3
+                                         → giảm Tier 4 từ 30% → 5%
+```
+
+**Học gì:** `recall_fast` = Tier 0-2 (pure cache + BM25, 0 LLM calls). `recall_deep` = Tier 3-4. Pre-fetch trick: chạy search trước, inject results vào LLM prompt thay vì để LLM tự search từ đầu.
+
+---
+
+### Từ Letta-code — Agent Self-Edits Its Own Context (★★★★★)
+
+**Pattern học được:**
+```
+Memory blocks = editable segments của system prompt.
+Agent tự rewrite → behavior thay đổi ngay invocation tiếp theo.
+Git-tracked → reversible, auditable, collaborative.
+```
+
+**Tại sao quan trọng:** Đây là cách thực hiện "không nhắc lại" triệt để nhất. Agent không chỉ "nhớ" facts — agent **tự modify hành vi** của mình. Không cần fine-tune, không cần training loop.
+
+**Học gì:** Smart Memory nên có "writable context blocks" layer — một số sections của system prompt có thể bị agent update (ví dụ: `[preferences]`, `[project_conventions]`, `[current_focus]`). Version-controlled.
+
+---
+
+### Từ Letta-code — Layered Skill Priority Stack (★★★★)
+
+**Pattern học được:**
+```
+Project skills  (.skills/)           ← override all
+Agent skills    (~/.letta/.../skills/)
+Global skills   (~/.letta/skills/)
+Bundled skills  (package defaults)   ← lowest
+```
+
+**Học gì:** Smart Memory behavior definitions (SKILL.md / context templates) phải có cùng hierarchy. Project-level definitions override agent-level. Team shares global defaults, individual projects customize.
+
+---
+
+### Từ Letta-code — Dual-Mode Backend với Capability Flags (★★★★)
+
+**Pattern học được:**
+```typescript
+BackendCapabilities {
+    remoteMemfs: bool      // sync to remote
+    localMemfs: bool       // local git
+    serverSecrets: bool    // secrets API
+}
+// Same interface → flag quyết định features available
+// Local mode: không cần login, privacy-first
+// API mode: full features, team sync
+```
+
+**Học gì:** Smart Memory server phải có local-first mode và optional cloud mode. `SmartMemoryCapabilities` flags: `cloud_sync`, `team_share`, `cross_project_search`. Local mode là default, cloud là opt-in.
+
+---
+
 ### Từ Hermes — Plugin Orchestration Layer (★★)
 
 **Pattern học được:**
@@ -606,6 +1154,151 @@ Agent không cần biết provider bên dưới là gì
 
 ---
 
+### Self-Describing Orientation Tool — `smem orient` (★★★★★)
+
+**Vấn đề không ai giải quyết:**
+
+Tất cả các hệ hiện tại đều **query-first** — agent phải biết cần hỏi gì trước khi hỏi. Nhưng đầu session, agent không biết memory có gì, nên không biết hỏi cái gì. Đây là lỗ hổng cơ bản dẫn đến agent bỏ qua memory hoặc dùng sai.
+
+`wake_up` giải quyết một phần — inject facts tự động — nhưng agent vẫn không biết:
+- Memory này đang cover bao nhiêu topic?
+- Cái gì là trọng tâm nhất của project?
+- Còn memory nào chưa được inject nhưng đang tồn tại?
+- Nên gọi tool nào tiếp theo, và khi nào?
+
+**Pattern thiết kế:**
+
+Agent gọi một tool duy nhất và nhận về toàn bộ orientation cần thiết. Tool **tự mô tả chính nó** — guide được sinh từ trạng thái thực của project, không phải văn bản cứng trong docs:
+
+```typescript
+smem.orient(project_id) → {
+  spine: [
+    { slug: "architecture-overview", summary: "Hybrid storage, global+local bank", count: 12, freshness: "2d" },
+    { slug: "auth-decisions",        summary: "JWT, refresh token strategy",        count: 5,  freshness: "5d" },
+    { slug: "db-layer",              summary: "SQLite local-first, WAL mode",        count: 8,  freshness: "1d" },
+    { slug: "open-loops",            summary: "Merge wizard, web UI chưa làm",       count: 2,  freshness: "3d" }
+  ],
+  last_session: {
+    summary: "Implement db migration layer, chốt SQLite WAL mode",
+    open_loops: ["Merge wizard chưa implement", "Web UI pending"]
+  },
+  usage_guide: {
+    tools: [
+      { name: "orient",     when: "đầu session hoặc khi cần hiểu full picture" },
+      { name: "focus",      when: "drill vào một topic cụ thể từ spine", example: "focus('db-layer')" },
+      { name: "recall",     when: "tìm kiếm thông tin cụ thể bằng query", example: "recall('WAL mode decision')" },
+      { name: "store",      when: "sau khi ra quyết định, fix lỗi, hoàn thành task có nghĩa" },
+      { name: "open_loops", when: "kiểm tra task còn dở đầu hoặc cuối session" }
+    ]
+  }
+}
+```
+
+**Tại sao quan trọng:**
+
+1. **Navigation-first thay vì query-first.** Agent thấy bản đồ topic trước, rồi mới drill vào. Thay vì đoán keyword, agent biết chính xác `focus('db-layer')` sẽ trả về gì.
+
+2. **Trust mechanism.** Agent thấy memory có substance (12 memories về architecture, 8 về db-layer) → tin tưởng dùng memory thay vì tự suy diễn. Đây là lý do agent bỏ qua memory: không thấy memory có giá trị.
+
+3. **Usage guide gắn với trạng thái thực.** Không phải docs tĩnh trong CLAUDE.md — guide phản ánh đúng tools đang available và cách dùng theo context hiện tại.
+
+4. **Không blocking, không LLM call.** Spine được pre-computed background, `orient` chỉ đọc cache + format. Sub-20ms.
+
+**Cơ chế sinh Spine:**
+
+```
+Trigger: PostToolUse (signal cao) hoặc SessionEnd
+
+Background job:
+  1. Cluster tất cả memories theo semantic similarity
+  2. LLM (cheap model) sinh slug + 1-line summary cho mỗi cluster
+  3. Detect open loops: memories type=goal/task chưa có resolution
+  4. Detect topic relationships (cross-references giữa clusters)
+  5. Lưu spine.json với children_hash
+  
+  Chỉ rebuild khi children_hash thay đổi — không rebuild theo timer.
+```
+
+**Spine không do user viết tay.** Nếu user muốn pin một topic thủ công:
+```bash
+smem pin "architecture-overview" --summary "Hybrid storage model, quyết định lõi"
+```
+Pinned topics luôn xuất hiện trong spine dù memory count thấp.
+
+**Phân biệt `orient` và `wake_up`:**
+
+```
+wake_up  (platform fires, agent không biết):
+  → inject compact facts vào system prompt
+  → agent thấy context nhưng không biết nó đến từ đâu
+  → 0 LLM calls, <10ms từ pre-computed cache
+
+orient   (agent chủ động gọi):
+  → agent nhận structured response: spine + last_session + usage_guide
+  → agent biết đang interact với memory system
+  → 0 LLM calls, <20ms từ pre-computed spine cache
+  → dùng khi wake_up không đủ hoặc agent cần full picture
+```
+
+Hai cơ chế không thay thế nhau — chúng bổ sung nhau:
+- `wake_up` = passive hydration (always on)
+- `orient` = active navigation (on demand)
+
+**Học gì:** Smart Memory phải có `orient` như first-class tool trong API surface. Đây không phải nice-to-have — đây là cơ chế để agent **biết cách dùng và tin dùng** memory. Thiếu `orient`, agent sẽ bỏ qua memory sau 2-3 session không thấy giá trị.
+
+---
+
+### Spine — Flat Map với Hard Cap (★★★★★)
+
+**Vấn đề granularity:**
+
+Spine phẳng có hai failure mode đối lập:
+- Quá thô (3-4 topics) → agent không biết drill vào đâu
+- Quá chi tiết (30+ topics) → hairball, agent bị overwhelm
+
+**Giải pháp: flat spine + hard cap, không tier trung gian**
+
+Thêm tier trung gian (L1 mapping) để giải quyết granularity là sai hướng — nó thêm complexity mà không thêm capability. Kết quả tương đương đạt được đơn giản hơn:
+
+```
+orient()               → spine (5–8 topics) + last_session + usage_guide
+focus('architecture')  → memories trong topic (trực tiếp, BM25+vector)
+recall(query)          → cross-topic search
+```
+
+`focus(slug)` không trả về một tier mới — nó trả thẳng memories trong topic đó. Nếu agent cần narrow hơn, gọi `recall(query)` với context đã có từ `focus`.
+
+**Granularity rule:**
+
+```
+Hard cap: 8 topics max
+  >8 clusters → merge nhỏ nhất (không expand)
+  topic >40 memories → split thành 2 topics riêng
+
+Topic tốt:  architecture, auth-system, data-layer, open-loops
+Topic xấu:  misc, decisions, other  ← không navigable
+```
+
+**Rebuild trigger (data-driven, không timer):**
+
+```
+Trigger rebuild spine khi:
+  - Memory count tăng >20% so với lần build trước
+  - Memory mới không fit topic nào (semantic distance > threshold)
+  - Topic không có memory mới >60 ngày
+
+Dùng children_hash để skip rebuild khi data chưa thực sự thay đổi.
+Không rebuild mỗi store() — tốn và tạo noise.
+```
+
+**Tại sao hard cap quan trọng hơn algorithm:**
+
+Clustering algorithm tốt nhất vẫn ra 15+ clusters nếu project đủ lớn. Hard cap buộc system phải merge = buộc tổng quát hóa = tránh hairball. Đây là nguyên tắc thiết kế, không phải optimization detail.
+
+**Học gì:** Spine → Memory trực tiếp, không tier trung gian. Hard cap tại 8 topics. Rebuild theo data change, không theo timer.
+
+---
+
 ## Tổng Hợp: Bộ Ý Tưởng Thiết Kế Smart Memory
 
 Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên, để build Smart Memory:
@@ -617,11 +1310,14 @@ Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên,
 | **Progressive Disclosure (3 layer)** | claude-mem | Tiêu chí "hiệu quả": giảm 90% token waste |
 | **Lifecycle Hooks tự động** | claude-mem | Tiêu chí "không nhắc lại": agent không tự nhớ |
 | **UUID project_id trong local config** | PURPOSE.md | Tiêu chí "ổn định": chống path drift |
-| **wake_up / context_pack** | ICM | Tiêu chí "nhanh": sub-10ms session hydration |
+| ~~**wake_up / context_pack**~~ | ~~ICM~~ | ~~Bị loại — xem [decision](.decisions/no-wakeup-injection.md)~~ |
+| **smem.guide() — cross-agent bootstrap** | — | Agent mới (bất kỳ loại nào) gọi 1 tool → self-onboard; `smem install` inject 1 dòng vào config file của agent để trigger |
+| **smem.orient() — project context on demand** | — | Agent tự pull khi user cần orient, không inject tự động; tách biệt với guide() |
 | **Memory Versioning (supersedes[])** | agentmemory | Không mất history khi consolidate |
 | **Typed Memory (type field)** | RetainDB | Filter chính xác, không interpret từ content |
 | **Global/Local Bank Isolation** | Hindsight | Tiêu chí "layer rõ": project boundary thực sự |
 | **4-Tier Schema Validation** | Understand-Anything | LLM output không bao giờ perfectly valid — phải sanitize → normalize → auto-fix → referential integrity |
+| **Temporal Fact Model (valid_at/invalid_at)** | Zep | Không chỉ "khi nào ghi", mà "khi nào fact đúng" — cho phép time-travel query |
 
 ### Tier 2 — Quan trọng (không có thì yếu)
 
@@ -644,6 +1340,20 @@ Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên,
 | **Domain node hierarchy (domain→flow→step)** | Understand-Anything | Business logic tách khỏi code structure trong Smart Macro-Graph |
 | **Fingerprinting cho incremental learn** | Understand-Anything | Chỉ re-index phần thay đổi khi `smem learn` chạy lại |
 | **Alias resolution table** | Understand-Anything | Normalize LLM type output về canonical form trước khi persist |
+| **Context Templates** | Zep | Declarative context format per-project, tách format khỏi retrieval logic |
+| **Bidirectional evolution (async)** | A-mem | Memory mới có thể enrich memories cũ — implement async để không block store |
+| **Semantic triple: keywords+context+tags** | A-mem | Enforce 3 fields này trong schema, LLM extract, không optional |
+| **Contextualized document chunking** | Zep | Inject document-level context vào mỗi chunk trước khi ingest |
+| **Async-first store (MemScheduler)** | MemOS | store() return ngay, background queue xử lý embedding+graph+dedup |
+| **Sidecar Signals** | ByteRover | ranking signals tách riêng khỏi content → no VC pollution, no merge conflicts |
+| **Lane Budgeting** | ByteRover | token budget chia theo lanes (decisions/preferences/recent), không flat top-N |
+| **Staleness hash** | ByteRover | derived artifacts có children_hash → regenerate on data change, không theo timer |
+| **UUID5 deterministic dedup** | cognee | identity fields → UUID5 → same entity = same ID, dedup at DB layer |
+| **Typed agent interaction entries** | cognee | TraceEntry, SkillRunEntry — rich semantics cho tool calls và skill execution |
+| **Provenance bắt buộc** | cognee | source_pipeline + source_task + content_hash trên mọi record |
+| **Agent self-edits memory blocks** | Letta-code | agent rewrite system prompt segments → immediate behavior change, git-tracked |
+| **Layered skill priority stack** | Letta-code | Project > Agent > Global > Bundled, override semantics rõ ràng |
+| **Dual-mode backend + capability flags** | Letta-code | local-first default, cloud opt-in, same interface |
 | **Representation cache layer** | Honcho | Pre-computed compact summary, update khi memory đổi |
 | **Temporal search boost** | Hindsight | "Quyết định gần đây nhất về X" query |
 | **Disposition traits** | Hindsight | Reflect khác nhau theo context của project |

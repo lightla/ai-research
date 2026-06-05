@@ -1,0 +1,70 @@
+# Smart Memory — Agent Guide
+# File này được serve bởi smem.guide()
+# User có thể chỉnh sửa để phù hợp với workflow của mình
+
+what: >
+  Smart Memory là persistent memory cho AI agent.
+  Lưu decisions, preferences, context của project qua nhiều session.
+  User quyết định lưu gì — agent không tự động capture.
+
+tools:
+  guide:
+    when: "Gọi lần đầu khi chưa biết smem là gì"
+    note: "Trả về file này"
+
+  orient:
+    when: >
+      Gọi khi user nói 'tiếp tục', 'project này đang làm gì',
+      hoặc khi bắt đầu task mà chưa rõ context project
+    returns: "Spine (danh sách topics), last session summary, usage guide"
+    note: >
+      KHÔNG gọi tự động khi session start.
+      Chỉ gọi khi user thực sự cần orient — có thể hôm nay làm topic khác hôm qua
+
+  focus:
+    when: "Đã biết topic cần làm, muốn xem tất cả memories liên quan"
+    example: "smem.focus('database')"
+    returns: "Tất cả memories trong topic đó"
+
+  recall:
+    when: "Tìm thông tin cụ thể bằng query"
+    example: "smem.recall('PostgreSQL migration approach')"
+    returns: "Top memories theo relevance (BM25 + vector)"
+
+  open_loops:
+    when: "Cần biết việc còn dở, task chưa xong"
+    returns: "Memories có type=event/goal chưa có resolution"
+
+  store:
+    when: "Khi USER yêu cầu lưu — 'nhớ cái này nhé', 'lưu lại đi'"
+    note: "User quyết định lưu gì. Agent KHÔNG tự phán xét và lưu."
+    example: >
+      smem.store(
+        type='decision',
+        content='Dùng Redis cho session cache',
+        keywords=['redis','cache'],
+        topic='infrastructure'
+      )
+
+storage_mechanisms:
+  direct_call:
+    use_when: "Lưu 1 record đơn giản, user nói 'nhớ cái này'"
+    how: "Gọi smem.store() trực tiếp"
+
+  yaml_file:
+    use_when: "Lưu nhiều records, tổng kết session, quyết định phức tạp"
+    how: >
+      Agent write .smart-memory/pending.yml
+      rồi gọi smem.load('.smart-memory/pending.yml')
+    schema: |
+      - type: decision | preference | instruction | event | fact | error_resolved
+        content: "..."
+        keywords: [k1, k2]   # optional
+        topic: slug           # optional
+
+principles:
+  - "User quyết định lưu gì, không phải agent"
+  - "Pull khi cần, không inject tự động vào session start"
+  - "orient() để biết có gì — focus/recall để lấy gì cụ thể"
+  - "guide() gọi 1 lần — orient() gọi khi cần context project"
+  - "Hôm nay làm gì là do user quyết định, không phải session trước để lại"

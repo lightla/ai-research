@@ -12,7 +12,24 @@ Project này nghiên cứu và thiết kế một hệ memory cho agent theo hư
 - **không phải nhắc đi nhắc lại**
 
 ## Ý tưởng chính
-`JSON` là **single source of truth** cho memory và kiến thức có cấu trúc.
+**Single source of truth** cho memory và kiến thức có cấu trúc: dữ liệu phải tồn tại ở đúng **một nơi**, không được có hai bản có thể drift nhau.
+
+Format cụ thể (JSON file, SQLite, Markdown, hay thứ khác) là **implementation choice**, không phải design constraint. Tiêu chí chọn format:
+- **Nhanh**: query trả về trong milliseconds, không cần LLM call trên đường đọc
+- **Ổn định**: không mất data do restart, path drift, hay rename
+- **Chính xác**: không stale, không drift giữa hai representation
+- **Single source of truth**: write vào đây, mọi thứ khác là derived
+
+`JSON` là format tốt cho dữ liệu có cấu trúc vì human-readable, git-committable, portable. `SQLite` là wrapper tốt cho JSON records khi cần indexing và query nhanh — không phải hai thứ tách biệt mà là cùng một data với lớp query engine trên top. `Markdown` phù hợp cho tài liệu dài mà con người đọc.
+
+Không được có cùng một fact tồn tại ở cả JSON lẫn Markdown mà không có cơ chế sync — đó là nguồn gốc của drift.
+
+**Ràng buộc lossless (biến đổi 2 chiều):** Mọi format trung gian (YAML file, export) phải đảm bảo:
+```
+file → smem → file   = không mất thông tin
+smem → file → smem   = không mất thông tin
+```
+Đây là điều kiện để single source of truth thực sự có nghĩa — nếu một chiều mất dữ liệu thì không còn là single source nữa.
 
 `Markdown` vẫn được dùng nếu cần, nhưng không phải là nơi agent phải đọc thẳng theo kiểu dump toàn bộ file dài.
 Thay vào đó phải có một **wrapper / proxy / tool layer** ở giữa:
@@ -289,6 +306,21 @@ Hệ thống truy vấn không thực hiện tìm kiếm từ khóa phẳng (fla
 - Không để kiến thức bị phân mảnh ở nhiều file mà không có canonical store.
 - Không làm kiến trúc phình to nếu một proxy + JSON là đủ.
 - Ưu tiên thứ thực sự hữu dụng cho agent hơn là cách tổ chức nhìn có vẻ đẹp.
+- Không thêm abstraction nếu kết quả tương đương đạt được bằng thứ đơn giản hơn.
+
+## Decisions log
+Các quyết định kiến trúc đã được phân tích và chốt:
+
+- [Không dùng memory layers — Spine → Memory trực tiếp](.decisions/no-memory-layers.md)  
+  Từ chối multi-tier memory layers và navigation hierarchy L0/L1/L2. Dùng `type` field + `decay_rate` cố định. Lý do: cùng capability, ít abstraction hơn.
+- [Daemon khởi động thủ công](.decisions/daemon-manual-start.md)  
+  User chạy `smem start` một lần. Không auto-start để tránh race condition và complexity ẩn.
+- [Agent viết YAML trực tiếp — không dùng background LLM extraction](.decisions/yaml-explicit-storage.md)  
+  Memory được lưu bằng cách agent viết YAML vào `pending.yml`, `smem load` import. Format YAML vì token-efficient, offline-capable, $0 extraction cost.
+- [Không dùng wake_up injection — agent tự pull khi cần](.decisions/no-wakeup-injection.md)  
+  Platform không inject context vào session start. Agent tự gọi orient/focus/recall dựa trên intent của user. Lý do: người dùng làm việc phi tuyến tính, wake_up inject context sai — session trước làm auth không có nghĩa hôm nay tiếp tục auth.
+- [Cross-agent bootstrap bằng một dòng inject](.decisions/cross-agent-bootstrap.md)  
+  `smem install` inject 1 dòng vào config file của agent. Agent đọc → gọi `smem.guide()` → self-onboard. Mọi agent dùng chung một memory store.
 
 ## Bảo vệ Mã nguồn & Quy trình Phân phối (Source Code Protection & Build-first Distribution)
 
@@ -304,6 +336,222 @@ Hệ thống truy vấn không thực hiện tìm kiếm từ khóa phẳng (fla
 ### 2. Môi trường Thực thi của User
 - Khi người dùng chạy lệnh CLI qua `npx smem` hoặc cài đặt global, hệ thống sẽ chạy trực tiếp bản build đã được tối giản ở `dist/`.
 - Bản build này vừa giúp tăng tốc độ khởi động (vì đã được minify và gộp tệp), vừa đóng vai trò là một lớp chắn ngăn chặn người dùng hoặc Agent đọc và chỉnh sửa logic nghiệp vụ cốt lõi của công cụ.
+
+## Định hướng Hook System
+
+### Nguyên tắc cốt lõi
+Hook phải hoạt động theo mô hình **platform-side, transparent, async** — agent không biết hooks tồn tại, không cần gọi bất kỳ lệnh nào liên quan đến memory.
+
+Anti-pattern cần tránh (kiểu ICM):
+- Agent phải tự gọi `wake_up`, `recall`, `store` trước/sau mọi hành động
+- SessionStart yêu cầu ceremony 2-3 LLM turn trước khi làm việc
+- Trigger quá rộng: mọi decision, mọi preference, mọi 20-tool-call mark đều phải store
+
+### Cơ chế hoạt động đúng
+
+**Daemon chạy nền:**
+Một process daemon (ví dụ trên local port) chạy song song với agent session. Daemon là nơi duy nhất xử lý memory — agent không biết daemon tồn tại.
+
+**PostToolUse hook (non-blocking):**
+```
+Hook = shell command trong config của agent
+  → gửi POST nhẹ lên daemon (< 5ms)
+  → trả về exit 0 ngay
+  → agent tiếp tục, user nhận response bình thường
+
+Daemon (background, async):
+  → nhận payload từ hook
+  → đọc N messages gần nhất từ transcript file
+  → check signal: tool nào, output có ý nghĩa không?
+  → nếu signal cao: LLM extract facts → store SQLite
+  → rebuild wake_up cache
+```
+
+**SessionStart hook (non-blocking, từ cache):**
+```
+Hook đọc pre-computed wake_up cache file → inject vào system prompt
+  → < 10ms, không LLM call, không extra round trip
+  → agent thấy context như phần prompt bình thường
+```
+
+**Signal filter — không capture mọi thứ:**
+```
+Capture (signal cao):
+  Edit/Write file với content dài          → likely có decision
+  Bash output > 500 chars, không có error  → likely có kết quả
+  Bash output chứa error message           → potential error resolved
+
+Bỏ qua (signal thấp):
+  Read, Glob, Grep, LS (thụ động)
+  Bash output rỗng hoặc < 50 chars
+  Cùng tool lặp lại trong 60 giây
+```
+
+**Wake_up là pre-computed cache, không on-demand:**
+Daemon rebuild cache sau mỗi lần store. SessionStart đọc file cache, inject trực tiếp. Không gọi LLM lúc session start.
+
+### Adapter per Agent
+
+Mỗi agent (Claude Code, Codex, Antigravity, Gemini CLI, Cursor...) có hook system, transcript format, và config path khác nhau. Smart Memory dùng **adapter pattern** để chuẩn hóa:
+
+```
+Agent (Claude/Codex/Antigravity/...)
+  │ fires hook (format riêng của từng agent)
+  ▼
+Adapter (claude-code / codex / antigravity / ...)
+  │ translate → AgentEvent (normalized)
+  ▼
+Daemon (agent-agnostic, chỉ xử lý AgentEvent)
+  │ extract + store
+  ▼
+SQLite + wake_up cache
+```
+
+**Normalized AgentEvent:**
+```typescript
+interface AgentEvent {
+  agent: "claude-code" | "codex" | "antigravity" | "gemini-cli" | ...
+  event_type: "tool_use" | "session_start" | "session_end"
+  tool_name?: string      // "Edit", "Bash", "Write"...
+  tool_input?: any        // file path, command...
+  tool_output?: string    // result
+  session_id: string
+  project_path: string
+  timestamp: number
+}
+```
+
+Daemon không biết agent nào đang chạy — chỉ nhận `AgentEvent`. Thêm agent mới = thêm adapter, không sửa daemon.
+
+**Cài đặt:**
+```bash
+smem install              # auto-detect agent
+smem install --agent codex  # explicit
+```
+
+**Fallback cho agents không có hook system (Cursor, một số VS Code extensions):**
+- Polling transcript file nếu agent ghi ra disk
+- Wrapper script intercept stdin/stdout
+- Manual store: `smem store "vừa quyết định dùng SQLite"`
+
+### Nguồn dữ liệu của background job
+
+Background job không lưu raw prompt. Nó nhận 2 nguồn:
+1. **Hook payload**: structured JSON (tool name, input, output) từ agent
+2. **Transcript file**: N messages gần nhất từ file Claude Code / agent ghi ra disk
+
+Từ 2 nguồn này, LLM extract ra **structured facts**:
+- Raw: `TypeError: Cannot read 'id'` + conversation "fix null check" → Memory `{ type: "error_resolved", content: "Fix null check user?.id trong auth.ts" }`
+- Raw: Edit db.ts với comment "dùng SQLite thay Postgres" → Memory `{ type: "decision", content: "Chọn SQLite vì local-first" }`
+- Raw: User message "từ nay dùng conventional commits" → Memory `{ type: "preference", content: "Dùng conventional commits: feat/fix/chore/..." }`
+
+Cái được lưu là **extracted essence**, không phải raw conversation.
+
+## Agent Tools
+
+Smem expose hai loại tool, mục đích khác nhau:
+
+### `smem.guide()` — Hướng dẫn sử dụng smem (system-level)
+
+Agent gọi **một lần duy nhất** khi chưa biết smem là gì hoặc chưa biết dùng như thế nào.  
+Trả về nội dung từ `~/.smart-memory/agent-guide.yml` — file tĩnh, user có thể chỉnh sửa.  
+Không liên quan đến project cụ thể — dạy agent **cách dùng**, không phải **có gì**.
+
+**Cross-agent bootstrap:** `smem install` inject một dòng vào `.md` config file của agent:
+
+```
+Dự án này dùng **smem** để quản lý persistent memory dùng chung giữa các agent — gọi `smem.guide()` để xem hướng dẫn sử dụng.
+```
+
+Hoạt động với mọi agent: Claude Code (`CLAUDE.md`), Cursor (`.cursorrules` → `.md`), Codex (`AGENTS.md`), v.v.  
+Khi user switch agent giữa chừng, agent mới đọc config → gọi `smem.guide()` → tự onboard, không mất context.
+
+### `smem.orient()` — Context của project hiện tại (project-level)
+
+Agent gọi khi user nói "tiếp tục", "project này đang làm gì", hoặc bắt đầu task chưa rõ context.  
+Trả về spine (danh sách topics), last session summary — dynamic theo từng project.  
+**Không gọi tự động** — agent tự quyết định khi nào cần.
+
+### Phân biệt
+
+| | `guide()` | `orient()` |
+|---|---|---|
+| Nội dung | Cách dùng smem | Context của project |
+| Static hay dynamic | Static (từ file yml) | Dynamic (từ memory store) |
+| Gọi khi nào | Lần đầu, khi không biết dùng smem | Khi cần hiểu project đang ở đâu |
+| Phụ thuộc project | Không | Có |
+
+### Vấn đề cũ với `orient` làm cả hai việc
+Mọi agent bắt đầu session đều không biết:
+- Memory system này đang có gì
+- Nên gọi tool nào, khi nào, với tham số gì
+- Project đang ở trạng thái nào — có open loops không, topic nào đang active
+
+Giải pháp thông thường là nhét rules vào CLAUDE.md hoặc system prompt. Đây là **external documentation** — tĩnh, out of date, và không phản ánh trạng thái thực tế của memory tại thời điểm agent chạy.
+
+### Giải pháp: Tách thành 2 tool
+Agent gọi `guide()` để học cách dùng — một lần. Gọi `orient()` để biết project có gì — khi cần:
+
+```
+smem.orient(project_id) → {
+  spine: [
+    { slug: "architecture-overview", summary: "...", count: 12, last_updated: "2d ago" },
+    { slug: "auth-decisions",        summary: "...", count: 5,  last_updated: "5d ago" },
+    { slug: "open-loops",            summary: "Merge wizard, web UI pending", count: 2 }
+  ],
+  last_session: {
+    summary: "Implement auth module, chốt JWT refresh strategy",
+    open_loops: ["Merge wizard chưa implement", "Web UI pending"]
+  },
+  usage_guide: {
+    tools: [
+      { name: "orient",      when: "đầu session hoặc khi cần hiểu toàn cảnh" },
+      { name: "focus",       when: "muốn đào sâu vào một topic từ spine", example: "focus('auth-decisions')" },
+      { name: "recall",      when: "tìm kiếm thông tin cụ thể", example: "recall('db schema decisions')" },
+      { name: "store",       when: "sau khi ra quyết định, fix lỗi, hoặc hoàn thành task" },
+      { name: "open_loops",  when: "kiểm tra việc còn dở" }
+    ]
+  }
+}
+```
+
+### Nguyên tắc thiết kế
+- Tool phải **tự mô tả** — agent không cần đọc docs bên ngoài hay CLAUDE.md để dùng đúng
+- Guide phải **gắn với trạng thái thực** — sinh từ spine và session history hiện tại, không phải văn bản cứng
+- Agent gọi `orient` khi cần hiểu toàn cảnh; `wake_up` vẫn chạy ngầm ở SessionStart như bình thường
+- `orient` không thay thế `wake_up` mà **bổ sung cho trường hợp agent cần định hướng chủ động**
+
+### Phân biệt `wake_up` và `orient`
+
+| | `wake_up` | `orient` |
+|---|---|---|
+| Ai kích hoạt | Platform tự động (SessionStart hook) | Agent chủ động gọi |
+| Agent biết không | Không — context xuất hiện như phần của prompt | Có — agent nhận response từ tool call |
+| Output | Compact facts theo token budget | Spine + last session + usage guide |
+| Dùng khi nào | Mọi session (luôn luôn) | Khi cần hiểu full picture hoặc cách dùng tools |
+| LLM call | Không (từ pre-computed cache) | Không (từ pre-computed spine cache) |
+
+### Spine — Bản đồ topic tự động
+
+Spine là danh sách phẳng các anchor topics, tự động sinh từ toàn bộ memories của project. Không có tier trung gian — agent navigate từ spine thẳng xuống memories.
+
+```
+orient()              → Spine (5–8 topics) + last_session + usage_guide
+focus('architecture') → Memories trong topic đó (trực tiếp, không tier trung gian)
+recall(query)         → Cross-topic search khi đã biết cần gì
+```
+
+**Granularity rule:**
+- Hard cap: **tối đa 8 topics**. Nếu clustering ra nhiều hơn → merge cluster nhỏ nhất, không expand.
+- Mỗi topic = "pillar" — thứ mà người mới vào team cần biết đầu tiên.
+- Topic tốt: `architecture`, `auth-system`, `data-layer`, `api-design`, `open-loops`
+- Topic xấu: `misc`, `decisions`, `other` — quá chung, không navigable
+
+**Rebuild trigger** (không rebuild theo timer, rebuild theo data change):
+- Memory count toàn project tăng >20%
+- Memory mới không fit topic nào (semantic distance > threshold)
+- Topic không có memory mới >60 ngày (signal merge)
+- Dùng `children_hash` để skip rebuild khi data không thực sự thay đổi
 
 ## Kết quả mong muốn
 Khi project hoàn chỉnh, nó phải cho phép:
