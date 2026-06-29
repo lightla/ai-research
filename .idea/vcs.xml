@@ -3,6 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/A-mem" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/refs/ECC" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/MemOS" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/Memori" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/refs/OpenViking" vcs="Git" />

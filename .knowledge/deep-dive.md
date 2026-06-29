@@ -195,6 +195,8 @@ smem install --agent codex   # explicit
 - Wrapper script: `smem-wrap codex` intercept stdin/stdout
 - Manual: `smem store "vừa quyết định dùng SQLite"`
 
+**ECC validation:** ECC đã implement cross-harness support cho 7+ agents (Claude Code, Cursor, Codex, OpenCode, Gemini CLI, Zed, GitHub Copilot) bằng cùng adapter pattern. Bootstrap qua one-liner inject vào config file của từng agent — không cần per-agent setup phức tạp. smem nên dùng cùng approach.
+
 ---
 
 ### Kết Luận Hook Design
@@ -1140,6 +1142,96 @@ BackendCapabilities {
 
 ---
 
+### Từ ECC — Hook Runtime Controls qua Env Vars (★★★★★)
+
+**Pattern học được:**
+
+```bash
+# Không cần edit hook files để thay đổi behavior:
+ECC_HOOK_PROFILE=minimal    # chỉ critical hooks
+ECC_HOOK_PROFILE=standard   # default
+ECC_HOOK_PROFILE=strict      # tất cả hooks
+
+ECC_DISABLED_HOOKS=session-end,observer-loop  # disable specific hooks
+```
+
+**Tại sao quan trọng:** Hook configuration thường là static JSON. ECC cho phép override ở runtime qua env vars — rất hữu ích cho debugging, CI environments, hay khi user muốn tắt một hook cụ thể mà không sửa config.
+
+**Học gì:** smem hook layer nên có runtime gate tương tự. Ít nhất: `SMEM_HOOKS=off` để disable toàn bộ (debug mode), `SMEM_CAPTURE_ONLY=true` để chỉ capture không inject. Daemon đọc env vars khi start, không cần restart để thay đổi profile.
+
+---
+
+### Từ ECC — Cross-Harness Bootstrap qua One-Liner Inject (★★★★★)
+
+**Pattern học được:**
+
+```bash
+# scmem install chạy một lần → inject vào tất cả agent configs:
+Claude Code → CLAUDE.md
+Cursor      → .cursorrules
+Codex       → AGENTS.md
+OpenCode    → opencode.md
+
+# Nội dung inject:
+"Dự án này dùng smem để quản lý persistent memory — gọi sgmem.guide() để xem hướng dẫn."
+
+# Agent mới mở project → thấy one-liner → gọi guide() → self-onboard
+```
+
+**Tại sao quan trọng:** ECC có 7+ harnesses support theo cùng pattern này. Đây là **validation thực tế** rằng one-liner inject vào config file là đủ để bootstrap cross-agent. Không cần complex setup per-agent.
+
+**Học gì:** `scmem install` đã đúng hướng. ECC confirm: một dòng văn bản trong config file của agent là đủ để trigger self-onboarding. Agent LLM đọc config → thấy tool mention → gọi guide() → self-onboard. Pattern này works across Cursor, Codex, Claude Code, OpenCode.
+
+---
+
+### Từ ECC — Observer Lifecycle với Lease Model (★★★★)
+
+**Pattern học được:**
+
+```javascript
+// SessionStart hook:
+writeProjectLease(projectPath, sessionId)   // create lease
+
+// observe.sh:
+recordProjectActivity(projectPath)          // log activity
+
+// observer-loop.sh:
+if (noActiveLeasesExist()) { exit() }       // auto-stop when idle
+
+// SessionEnd hook:
+removeProjectLease(projectPath, sessionId)
+if (noLeasesRemain()) { stopObserver() }    // stop khi session cuối cùng exit
+```
+
+**Tại sao quan trọng:** Background daemon không nên chạy mãi mãi. Lease model đảm bảo daemon stop khi không còn active session, restart khi session mới start. Graceful lifecycle không cần user quản lý.
+
+**Học gì:** smem daemon nên có cùng lease model. `scmem start` có thể tự động (triggered từ SessionStart hook) thay vì user phải chạy thủ công. Daemon persist selama có ít nhất 1 active session lease, auto-stop sau đó. Lease file: `~/.smart-memory/leases/<project-uuid>/<session-id>.lease`.
+
+---
+
+### Từ ECC — Project-Scoped Learning với Auto-Promote (★★★★)
+
+**Pattern học được:**
+
+```
+Project scope: hash của git remote URL / repo path
+  → instincts lưu tại ~/.local/share/ecc-homunculus/projects/<hash>/
+  → React patterns ở React project, không lẫn sang Python project
+
+Auto-promote rule: instinct seen in 2+ distinct projects → promote to global
+  → universal patterns (validate input, conventional commits) tự nhiên nổi lên global
+  → project-specific patterns ở lại local scope
+
+Hysteresis: tránh oscillation khi promote/demote
+  → promote ngưỡng = 2+ projects, không promote ngay lần đầu cross-project
+```
+
+**Tại sao quan trọng:** Đây là implementation concrete nhất của global/local boundary được thấy trong tất cả refs. Scope tự động từ git identity (không cần user label), promote có ngưỡng (không phải immediate).
+
+**Học gì:** Global bank của smem nên dùng cùng auto-promote logic cho memories. Memory được recall ở 2+ distinct projects → candidate cho global. User review → confirm promote. Scope detection: git remote URL hash là anchor ổn định (khác UUID v4 do user init, hash này tự sinh).
+
+---
+
 ### Từ Hermes — Plugin Orchestration Layer (★★)
 
 **Pattern học được:**
@@ -1446,6 +1538,10 @@ Dưới đây là bộ patterns được chọn lọc, có thứ tự ưu tiên,
 | **Embedding cache (hash→vector)** | memweave | Tránh re-embed cùng content, cheap optimization |
 | **Graceful degradation** | memweave, TencentDB | Embedding fail → fallback BM25-only, không crash |
 | **Semantic triples (subject-predicate-object)** | Memori | Lưu relation chặt hơn free-form text, query được theo subject/predicate |
+| **Hook runtime controls** | ECC | ECC_HOOK_PROFILE/DISABLED_HOOKS gate hooks ở runtime, không cần edit config — implement `SMEM_HOOKS=off` tương tự |
+| **Cross-harness one-liner bootstrap** | ECC | inject 1 dòng vào agent config (CLAUDE.md/AGENTS.md/.cursorrules) → agent self-onboard — validates `scmem install` design |
+| **Observer lease model** | ECC | SessionStart write lease, SessionEnd remove, observer auto-stop khi no leases — pattern sạch cho smem daemon lifecycle |
+| **Auto-promote project→global** | ECC | Instinct seen in 2+ projects → candidate promote to global (với review) — concrete implementation của global/local boundary |
 
 ### Tier 4 — Không làm (anti-pattern)
 

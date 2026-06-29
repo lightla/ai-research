@@ -5,9 +5,9 @@
 # ═══════════════════════════════════════════════════
 ---
 brain: default
-updated: 2026-06-05T06:31:44
-neurons: 3011
-synapses: 12845
+updated: 2026-06-19T04:30:46
+neurons: 3424
+synapses: 10460
 token_budget: 1200
 depth_available: [surface, detail, deep]
 ---
@@ -17,76 +17,69 @@ depth_available: [surface, detail, deep]
 # Agent: scan this section to understand the knowledge landscape.
 # Format: [id] content (type) {p:N} →edge→ [target_id_or_text]
 
-[c22] Session activity: | **403** | Forbidden | Đã đăng nhập nhưng không có quyền |… (concept) {p:5}
-  →related_to→ "forbidden đăng"
-  →involves→ "CoreServiceExceptionHandler"
+[e5] col_0: Session activity: Đã fix xong quota_main rồi (thêm case 3 + 4 ký tự).… (entity) {p:5}
+  →co_occurs→ "col_4: 3"
+  →in_column→ "Session activity: Đã fix xong quota_main rồi (thêm case 3…"
+  →co_occurs→ "col_1: không tự suy diễn 2. Làm theo instruction chính xác"
+  →co_occurs→ "col_2: không thêm/bớt 3. Kiểm tra đầy đủ trước khi báo…"
+  →co_occurs→ "col_3: 2"
 
-[e3] check giúp mình (entity) {p:5}
-  →co_occurs→ "col_5: chứ todo k được Cần xem lỗi cụ thể. Bạn check giúp…"
-  →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
+[e6] col_2: không thêm/bớt 3. Kiểm tra đầy đủ trước khi báo xong Xin lỗi. Công việc… (entity) {p:5}
+  →co_occurs→ "col_5: 4 ký tự) - ✅ `quota_main.blade.php` — copy code cho…"
+  →related_to→ "col_2: không thêm/bớt 3. Kiểm tra đầy đủ trước khi báo…"
+  →co_occurs→ "col_6: con chó nhà mày copy mày k biết copy ah [Image:…"
+  →in_column→ "Session activity: 1. Nghe yêu cầu rõ ràng từ lần đầu,…"
+  →co_occurs→ "col_4: 3"
 
-[e4] thấy lỗi gì cụ thể khi truy cập URL đó (entity) {p:5}
-  →co_occurs→ "col_5: chứ todo k được Cần xem lỗi cụ thể. Bạn check giúp…"
-  →co_occurs→ "col_1: và middleware nào đang apply. Bạn thấy lỗi gì cụ…"
-  →co_occurs→ [e3] "check giúp mình"
+[e7] col_1: không tự suy diễn 2. Làm theo instruction chính xác (entity) {p:5}
+  →co_occurs→ "col_4: 3"
+  →in_column→ "Session activity: Đã fix xong quota_main rồi (thêm case 3…"
+  →co_occurs→ "col_2: không thêm/bớt 3. Kiểm tra đầy đủ trước khi báo…"
+  →co_occurs→ "col_3: 2"
+  →co_occurs→ "col_5: 4 ký tự) - ✅ `quota_main.blade.php` — copy code cho…"
 
-[c23] Session activity: curl --location --request GET… (concept) {p:5}
-  →related_to→ "Session activity: ssh -R 80:localhost:3000 localhost.run #…"
-  →co_occurs→ "Session activity: MINIO_ENDPOINT=https://hcm04.vstorage.vng…"
+[c16] Session activity: "private_key": "[REDACTED]\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCB… (concept) {p:5}
+  →related_to→ "ntI6kicdckAzonjl"
+  →involves→ "YGEo"
+  →related_to→ "activity private key"
 
-[c24] Claude (concept) {p:5}
-  →co_occurs→ "only use in isolated environments"
-  →co_occurs→ "change mode"
-  →co_occurs→ "Tab"
-
-[c1] Session activity: lại ngu nữa, $user = getUser()?:User  ; … (concept) {p:6}
-  →co_occurs→ "Session activity: sao lại báo lỗi trong…"
-  →involves→ "user_photo_id"
-  →involves→ "đã giờ cần sửa lại này"
-
-[c2] Session activity: ->setFilters(['id' => $id]) ->setFields((array)… (concept) {p:6}
-  →involves→ "ControllerMethodSpec"
+[c17] Session activity: ->setFilters(['id' => $id]) ->setFields((array)… (concept) {p:5}
 
 # ── CLUSTERS ───────────────────────────────────────
 # Auto-detected topic groups from brain.db entity co-occurrence.
 # Agent: use clusters to scope recall queries.
 
-@error: [054eb4b0-77b7-4a05-b2d6-949ef7cdc051, 08359ce8-642c-4c84-9fa1-9a365ad892fa] "Error: to parse dotenv file"
-@todo: [068b2184-9a51-4e30-9792-4b1550085d7f, 06af5c95-d57e-4a0c-944c-33f840c87f4c] "TODO: be complete for this condition to "
-@thấy: [99e93202-0065-4975-9ce5-53b9e5da7b67, b1350586-bb1d-48b4-8aed-f7a74b28e4c1] "thấy lỗi gì cụ thể khi truy cập URL đó, check giúp mình"
-@muốn: [091964a1-c8ae-45ad-9aa4-70c63fb01199, 1187fd66-737d-4903-abba-efd5f0161438] "muốn, mở file đọc thử xem đã đúng"
+@session: [06079dcb-8260-4d8f-9771-53e53aada016, 7d1bb23a-1b81-4d56-be0a-3c241aae3192] "Session activity: cái này bị liên quan d, chỉ cần sửa HTML"
+@etc/php/8.3/cli/conf.d/20-sysvmsg.ini: [02bf1461-65b6-4b9f-93dc-0ce9ae09936b, 066afb70-4015-4f09-945a-386c58377cd3] "etc/php/8.3/cli/conf.d/20-sysvmsg.ini, You"
+@col_0: [0584b88f-4ff4-4688-ac65-eba937748284, 2f00fb3b-a637-4aaa-a002-c482e5faaabe, 3d31c041-bc16-4f88-ab8e-07dda75ed13a, 3e64fffc-f55a-4847-8351-e5844674824d, 3f4c7181-2332-41a1-ade2-f1715db5ed56] "col_0: Session activity: Xin lỗi. Công v, col_1: 2, col_0: Session activity: 1. Nghe yêu cầu"
+@col_1: [1dd31127-2c56-485a-9d99-54a7caa18685, 420b35a5-2f4e-41ee-8014-c219401548b0] "col_1: không tự suy diễn 2. Làm theo ins, col_0: Session activity: Đã fix xong quo"
 
 # ── SIGNALS ────────────────────────────────────────
 # Active alerts, unresolved items, pending decisions.
 # Agent: check this FIRST each session for urgent context.
 
-! thêm với current thì dùng scope() register cho mình
-! Session activity: Tôi chọn **`Current` prefix** — vì: - `CurrentAuthContext` đọc
-~ Session activity: | `AuthContextCarrier` | Ít phổ biến | Tôi chọn **`Current` prefix** — vì: -…
-! [_structured:key_value, activity authcontextcarrier, authcontextcarrier, authcontextcarrier ít,…
-! Session activity: | `AuthContextHolder` | Java-style, ít tự nhiên trong PHP | |…
-! [_structured:key_value, activity authcontextholder, authcontextcarrier, authcontextholder,…
-! Session activity: | `AuthContextHolder` | Java-style, ít tự nhiên trong PHP | |…
-! [_structured:key_value, activity authcontextholder, authcontextcarrier, authcontextholder,…
-! Session activity: | `AuthContextState` | Suffix "State" = rõ là mutable state | |…
-! [_structured:key_value, authcontextcarrier, authcontextholder, authcontextstate, currentauthcontext]
+! Session activity: Hiện tại filter 商品区分 đang ở sau category, cần move lên ngay sa
+! Session activity: bạn đảm bảo thêm dưới sản phẩm chưa ok tức là thêm dưới tên sp
+! Session activity: bạn đảm bảo thêm dưới sản phẩm chưa ok tức là thêm dưới tên sp
+! Session activity: |----------|-----|-----------| | Màn product list | `GET /prod | Session…
+! Session activity: $table->string('resource')->default('merchandise')->after('typ | Session…
+! [activity phải, productkindenum, productresourceenum, sale_type, session activity]
+! [category_id, productkindenum, productresourceenum, sale_type, sales_type]
+! [category_id, productkindenum, productresourceenum, sale_type, sales_type]
+! [category_id, product_kind, productkindenum, productresourceenum, sales_type]
+! Session activity: - **`sales_type`** — rõ nhất, "loại bán hàng" - **`product_kind`** — thêm prefix…
 
 # ── DEPTH MAP ──────────────────────────────────────
 # When surface isn't enough, this tells agent WHERE to dig.
 # Format: [id] → depth_hint (context)
 
-[c1] → NEEDS_DEEP (13 synapses in brain.db, recall "Session activity: lại ngu nữa, $user =…")
-[c2] → NEEDS_DEEP (10 synapses in brain.db, recall "Session activity: ->setFilters(['id'…")
-[c22] → NEEDS_DEEP (9 synapses in brain.db, recall "Session activity: | **403** |…")
-[e3] → NEEDS_DEEP (7 synapses in brain.db, recall "check giúp mình")
-[e4] → NEEDS_DETAIL (7 total synapses, recall "thấy lỗi gì cụ thể khi truy cập URL đó")
-[c23] → NEEDS_DEEP (7 synapses in brain.db, recall "Session activity: curl --location…")
-[c24] → NEEDS_DETAIL (8 total synapses, recall "Claude")
+[c16] → NEEDS_DETAIL (8 total synapses, recall "Session activity: "private_key":…")
+[c17] → NEEDS_DEEP (7 synapses in brain.db, recall "Session activity: ->setFilters(['id'…")
 
 # ── META ───────────────────────────────────────────
 # Stats for agent to gauge brain richness
 
 coverage: 0.01
 staleness: 0.08
-last_consolidation: 2026-06-05T06:31:44
-top_entities: [email_empty, laji, Error:, Session, TODO:]
+last_consolidation: 2026-06-19T04:30:46
+top_entities: [Session, Session, etc/php/8.3/cli/conf.d/20-sysvmsg.ini, chỉ, Session]
