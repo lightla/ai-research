@@ -3,6 +3,7 @@ import { createMemoryId } from "../core/ids";
 import { defaultSmartMemoryHome } from "../core/paths";
 import type { MemoryInput, MemoryRecord, ProjectRecord } from "../core/schema";
 import { MemoryInputSchema } from "../core/schema";
+import { rankMemories, type RecallOptions, type RecallResult } from "../retrieval/retrieval";
 import { openMemoryDb, type SqliteDatabase } from "./db";
 
 type MemoryRow = {
@@ -26,6 +27,13 @@ export type CreateMemoryOptions = {
   sourceKind?: string;
   sourceAgent?: string;
   source?: Record<string, unknown>;
+};
+
+export type UpdateMemoryInput = {
+  type?: MemoryRecord["type"];
+  title?: string | null;
+  content?: string;
+  tags?: string[];
 };
 
 export class MemoryRepository {
@@ -161,38 +169,22 @@ export class MemoryRepository {
   }
 
   recall(query: string, limit = 10): MemoryRecord[] {
-    const normalized = query.trim();
-    if (!normalized) {
-      return this.list(limit);
+    return this.retrieve({ query, limit, mode: "fts" }).map((result) => result.memory);
+  }
+
+  retrieve(options: RecallOptions): RecallResult[] {
+    let memories = this.allRecords();
+    if (options.mode === "fts" && options.query.trim()) {
+      const ftsQuery = buildFtsQuery(options.query);
+      if (ftsQuery) {
+        const rows = this.db
+          .prepare("SELECT id FROM memories_fts WHERE memories_fts MATCH ?")
+          .all(ftsQuery) as Array<{ id: string }>;
+        const ids = new Set(rows.map((row) => row.id));
+        memories = memories.filter((memory) => ids.has(memory.id));
+      }
     }
-
-    const ftsQuery = buildFtsQuery(normalized);
-    if (!ftsQuery) {
-      return this.contains(normalized, limit);
-    }
-
-    const rows = this.db
-      .prepare(
-        `SELECT m.*
-         FROM memories_fts f
-         JOIN memories m ON m.id = f.id
-         WHERE memories_fts MATCH ?
-           AND m.project_id = ?
-           AND m.scope = ?
-           AND m.status = 'active'
-         ORDER BY
-           CASE m.type
-             WHEN 'decision' THEN 0
-             WHEN 'context' THEN 1
-             WHEN 'todo' THEN 2
-             ELSE 3
-           END,
-           m.updated_at DESC
-         LIMIT ?`
-      )
-      .all(ftsQuery, this.projectIdForScope(), this.scope, limit) as MemoryRow[];
-
-    return rows.map((row) => this.mapMemory(row));
+    return rankMemories(memories, options);
   }
 
   contains(query: string, limit = 10): MemoryRecord[] {
@@ -240,10 +232,143 @@ export class MemoryRepository {
     return ids.map((id) => byId.get(id)).filter((memory): memory is MemoryRecord => Boolean(memory));
   }
 
-  context(): string {
-    const decisions = this.byType("decision", 5);
-    const contexts = this.byType("context", 5);
-    const todos = this.byType("todo", 5);
+  getById(id: string): MemoryRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM memories
+         WHERE id = ? AND project_id = ? AND scope = ?`
+      )
+      .get(id, this.projectIdForScope(), this.scope) as MemoryRow | undefined;
+    return row ? this.mapMemory(row) : null;
+  }
+
+  update(id: string, input: UpdateMemoryInput): MemoryRecord {
+    const current = this.getById(id);
+    if (!current) {
+      throw new Error(`Memory not found: ${id}`);
+    }
+    if (current.status === "archived" || current.status === "rejected") {
+      throw new Error(`Cannot edit memory with status ${current.status}: ${id}`);
+    }
+
+    const parsed = MemoryInputSchema.parse({
+      type: input.type ?? current.type,
+      ...(input.title === null ? {} : { title: input.title ?? current.title }),
+      content: input.content ?? current.content,
+      tags: input.tags ?? current.tags,
+      status: current.status
+    });
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE memories
+         SET type = ?, title = ?, content = ?, tags_json = ?, updated_at = ?
+         WHERE id = ? AND project_id = ? AND scope = ?`
+      )
+      .run(
+        parsed.type,
+        parsed.title ?? null,
+        parsed.content,
+        JSON.stringify(parsed.tags),
+        now,
+        id,
+        this.projectIdForScope(),
+        this.scope
+      );
+
+    return this.getById(id)!;
+  }
+
+  archive(id: string): MemoryRecord {
+    const current = this.getById(id);
+    if (!current) {
+      throw new Error(`Memory not found: ${id}`);
+    }
+    if (current.status !== "active") {
+      throw new Error(`Only active memories can be archived: ${id}`);
+    }
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE memories
+         SET status = 'archived', updated_at = ?
+         WHERE id = ? AND project_id = ? AND scope = ? AND status = 'active'`
+      )
+      .run(now, id, this.projectIdForScope(), this.scope);
+    return this.getById(id)!;
+  }
+
+  importRecords(records: MemoryRecord[], onConflict: "skip" | "replace" = "skip"): { imported: number; skipped: number } {
+    let imported = 0;
+    let skipped = 0;
+    const insert = this.db.prepare(
+      `INSERT INTO memories
+        (id, project_id, scope, type, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const replace = this.db.prepare(
+      `UPDATE memories
+       SET type = ?, title = ?, content = ?, tags_json = ?, status = ?, source_kind = ?, source_agent = ?, source_json = ?, created_at = ?, updated_at = ?
+       WHERE id = ? AND project_id = ? AND scope = ?`
+    );
+
+    this.db.exec("BEGIN");
+    try {
+      for (const record of records) {
+        const existing = this.getById(record.id);
+        if (existing && onConflict === "skip") {
+          skipped += 1;
+          continue;
+        }
+        if (existing) {
+          replace.run(
+            record.type,
+            record.title ?? null,
+            record.content,
+            JSON.stringify(record.tags),
+            record.status,
+            record.sourceKind,
+            record.sourceAgent ?? null,
+            JSON.stringify(record.source),
+            record.createdAt,
+            record.updatedAt,
+            record.id,
+            this.projectIdForScope(),
+            this.scope
+          );
+        } else {
+          insert.run(
+            record.id,
+            this.projectIdForScope(),
+            this.scope,
+            record.type,
+            record.title ?? null,
+            record.content,
+            JSON.stringify(record.tags),
+            record.status,
+            record.sourceKind,
+            record.sourceAgent ?? null,
+            JSON.stringify(record.source),
+            record.createdAt,
+            record.updatedAt
+          );
+        }
+        imported += 1;
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return { imported, skipped };
+  }
+
+  context(options: { limit?: number; maxChars?: number } = {}): string {
+    const selected = rankMemories(this.allActive(), { query: "", limit: options.limit ?? 15 }).map((result) => result.memory);
+    const decisions = selected.filter((memory) => memory.type === "decision");
+    const contexts = selected.filter((memory) => memory.type === "context");
+    const todos = selected.filter((memory) => memory.type === "todo");
 
     const lines = [this.scope === "global" ? "Scope: global" : `Project: ${this.project.projectName}`, ""];
 
@@ -283,7 +408,12 @@ export class MemoryRepository {
       }
     }
 
-    return lines.join("\n").trimEnd();
+    const output = lines.join("\n").trimEnd();
+    const maxChars = options.maxChars ?? 12_000;
+    if (output.length <= maxChars) {
+      return output;
+    }
+    return `${output.slice(0, Math.max(0, maxChars - 80)).trimEnd()}\n\n[Context truncated at ${maxChars} characters.]`;
   }
 
   allActive(): MemoryRecord[] {
@@ -292,6 +422,17 @@ export class MemoryRepository {
         `SELECT * FROM memories
          WHERE project_id = ? AND scope = ? AND status = 'active'
          ORDER BY type ASC, updated_at DESC`
+      )
+      .all(this.projectIdForScope(), this.scope) as MemoryRow[];
+    return rows.map((row) => this.mapMemory(row));
+  }
+
+  allRecords(): MemoryRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memories
+         WHERE project_id = ? AND scope = ?
+         ORDER BY created_at ASC`
       )
       .all(this.projectIdForScope(), this.scope) as MemoryRow[];
     return rows.map((row) => this.mapMemory(row));

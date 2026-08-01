@@ -136,7 +136,7 @@ smem reject <candidate-id>
 
 Candidates are shortcuts for review. They are `pending-review` and do not appear in normal `smem context`/`smem recall` until promoted.
 
-In phase 1, `smem process` is manual and exits after one batch. smem does not run a background daemon. Native hooks only run `smem hook run` for each agent event, append the raw event, then exit quickly.
+`smem process` can be run manually and exits after one batch. For `raw-input` and `raw-output`, native hooks also trigger one short-lived detached worker after the raw append. The hook still returns immediately; the worker runs offline classification/candidate processing and never calls an LLM, promotes memory, or deletes raw data. This is not a persistent daemon: a lock prevents overlapping workers, and a future daemon remains deferred until filtering and review rules are stable.
 
 ## Raw Review Commands
 
@@ -151,6 +151,15 @@ smem raw --agent antigravity --json "toolCall"
 
 Default `smem raw` prints matched fields and readable snippets. Use `--full` for formatted raw event JSON, or `--json` for the original raw JSONL line.
 
+Raw hook events have stable event ids. Fetch one exact event without searching again:
+
+```bash
+smem raw show <event-id>
+smem raw show <event-id> --json
+```
+
+Use `raw show` when you need the original agent-specific hook payload.
+
 `smem history` reads like the agent UI: it finds the best transcript match, then prints conversation history from that point onward.
 
 ```bash
@@ -160,7 +169,23 @@ smem history "stest-k001" --after 10 --full
 
 Default `history` output is readable timeline text and hides thinking-only/tool-only/empty command records. Each record is normalized into smem fields like `id`, `fromSource`, `agent`, `role`, and `kind` so agent-specific transcript formats can be adapted consistently. Use `--verbose` to include filtered records, or `--full` when you need paths and original transcript JSON records.
 
-`smem process` reads raw hook captures from `~/.smart-memory/events/pending.jsonl`, filters useful signals, and creates `pending-review` candidate memories. It does not make them official memory.
+Every displayed transcript record has a stable id. Fetch exactly one normalized record:
+
+```bash
+smem history show <record-id>
+smem history show <record-id> --full
+```
+
+This is local lookup and does not call an LLM.
+
+Official and review memories can also be fetched directly:
+
+```bash
+smem show <memory-id>
+smem show <candidate-id>
+```
+
+`smem process` reads raw hook captures from `~/.smart-memory/events/pending.jsonl`, filters useful signals, and creates `pending-review` candidate memories. It does not make them official memory. Hooks may trigger this command in the background for input/output events; run it manually when you want to force a batch scan.
 
 ```bash
 smem process
@@ -171,6 +196,27 @@ Typical output:
 ```text
 scanned=120 created=8 skipped=112
 ```
+
+For long-running sessions, Phase 4 adds an optional persistent offline worker:
+
+```bash
+smem daemon once
+smem daemon run --interval 1000
+smem daemon status
+smem daemon stop
+```
+
+`daemon run` is foreground-friendly for a service manager. It processes one home at a time, uses the same offline classifier, never promotes candidates, and never deletes raw events. Hooks continue to work without the daemon.
+
+Inspect queue volume or manually rotate old raw events:
+
+```bash
+smem events stats
+smem events archive --older-than 30
+smem events archive --older-than 30 --apply
+```
+
+Archive is preview-only unless `--apply` is present. Matching JSONL records move to `events/archive/`; the daemon never runs archive automatically.
 
 `smem candidates` lists those pending-review drafts so a user or agent can inspect them.
 
@@ -183,6 +229,14 @@ Then decide:
 ```bash
 smem promote <candidate-id>  # keep it as official active memory
 smem reject <candidate-id>   # discard it as noise
+```
+
+Only `smem promote <candidate-id>` changes a passive capture into official active memory. Until then, the record is `pending-review` and is excluded from normal `smem recall` and `smem context`. `smem reject <candidate-id>` marks noisy or incorrect candidates as rejected without deleting the raw capture.
+
+For deliberate memory, use `smem store` directly. It creates official active memory immediately because the user or agent explicitly chose to store it:
+
+```bash
+smem store --type decision "Dùng SQLite làm database storage offline"
 ```
 
 Use this flow after a long hooked session:
@@ -221,14 +275,29 @@ Official memory:      smem store OR smem promote; read with smem recall/list/con
 | `smem guide` | Agent or user | When unsure how smem works | Prints this guide |
 | `smem context` | Agent mostly | Start/resume task, "continue", project state questions | Reads official active memory |
 | `smem recall "query"` | Agent mostly | Need a specific past decision/topic | Searches official active memory |
+| `smem recall --compact "query"` | Agent mostly | Need ids/titles for cheap routing before fetching one record | Prints compact result rows |
+| `smem show <memory-id>` | User or agent | Need one exact official/review memory | Reads one memory by id |
+| `smem edit <memory-id> ...` | User preferred | Correct wording, type, or tags | Updates the same memory id |
+| `smem archive <memory-id>` | User preferred | Remove an official memory from active recall without deleting it | Marks it archived |
 | `smem raw "query"` | User or agent | Need to inspect hook-captured raw input/output/tool events | Searches raw capture log, including unpromoted events |
+| `smem raw show <event-id>` | User or agent | Already have one raw event id | Reads one exact raw hook event |
 | `smem history "query"` | User or agent | Need to read conversation from a raw match onward | Prints transcript timeline like the agent UI |
+| `smem history show <record-id>` | User or agent | Already have one transcript record id | Reads one exact normalized transcript record |
+| `smem show <memory-id>` | User or agent | Already have one memory id | Reads official or review memory by id |
 | `smem store ...` | Agent or user | User explicitly says remember this, or a clear decision/preference/todo is made | Creates official active memory directly |
 | `smem classify "text"` | Agent or developer | Debug/check offline classifier output | Shows 0-token classification result |
-| `smem process` | User or agent | After a hooked session, before reviewing passive captures | Converts raw events into pending candidates |
+| `smem process` | User or agent, or short-lived hook worker | Force a batch scan, or inspect what the hook worker processes | Converts raw events into pending-review candidates |
+| `smem daemon once` | User or service manager | Run one offline batch explicitly | Processes pending captures and exits |
+| `smem daemon run` | User or service manager | Keep candidate processing active during long sessions | Runs the optional background worker |
+| `smem daemon status/stop` | User | Inspect or stop the optional worker | Reads/sends signal through local pid metadata |
+| `smem events stats` | User or service manager | Diagnose raw queue volume without dumping content | Shows bytes, counts, agents, kinds, and time bounds |
+| `smem events archive` | User only | Reduce active queue while preserving old raw events | Moves old JSONL lines to a recoverable archive; preview is default |
 | `smem candidates` | User or agent | Review what passive capture suggests | Lists pending-review memory drafts |
 | `smem promote <id>` | User preferred, agent with permission | Candidate is correct and worth keeping | Makes candidate official active memory |
 | `smem reject <id>` | User or agent | Candidate is wrong/noisy | Marks candidate rejected |
+| `smem export --out <file>` | User | Backup or move memories | Writes portable JSON with ids/source metadata |
+| `smem import <file>` | User | Restore or copy memories into the current project | Imports records; preserves ids |
+| `smem scan --store <path>` | User | Registry mapping was lost but outsider stores remain | Rebuilds mappings from `project.json` metadata |
 | `smem index` | User or agent | Before semantic/hybrid vector search | Builds embedding index |
 | `smem render` | User mostly | Wants read-only Markdown view | Writes derived Markdown |
 
@@ -361,6 +430,26 @@ Search global memory:
 smem recall --scope global "commit style"
 ```
 
+Phase 3 retrieval filters are local and zero-token:
+
+```bash
+smem recall --type decision "storage"
+smem recall --tag sqlite "database"
+smem recall --topic hooks "validation"
+smem recall --status pending-review "storage"
+smem recall --compact --explain "storage"
+```
+
+Normal recall uses only `active` official memories. Use `--status pending-review` only when explicitly reviewing candidates. `--compact` is for cheap agent routing; `--explain` shows deterministic match, type, recency, and source adjustments.
+
+Bound agent context without tokenization or an LLM:
+
+```bash
+smem context --limit 10 --max-chars 12000
+```
+
+The context budget is character-based and reports truncation when the limit is reached. `contains` and `fts` remain offline. `semantic` and `hybrid` require an explicitly configured embedding provider and are not used silently.
+
 Print compact agent context:
 
 ```bash
@@ -378,6 +467,8 @@ Render read-only Markdown:
 ```bash
 smem render
 ```
+
+`smem render` writes derived Markdown under the outsider store. It creates `rendered/index.md`, type views under `rendered/types/`, and tag views under `rendered/tags/`. These files are views, not the source of truth.
 
 ## When An Agent Should Use smem
 

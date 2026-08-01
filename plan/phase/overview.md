@@ -26,12 +26,14 @@ Kết quả mong muốn: sau vài phiên làm việc, agent có thể gọi tool
 
 ## Phase 2: Usability Layer
 
-Sau khi core loop chạy được, phase 2 tập trung vào trải nghiệm dùng:
+Sau khi core loop chạy được, phase 2 tập trung vào trải nghiệm dùng. Vì Phase 1 đã làm vượt scope ban đầu một số phần như hook capture, raw/history, global scope, candidate review, và optional vector command surface, Phase 2 nên ưu tiên hardening thay vì mở rộng quá rộng:
 
-- CLI thân thiện hơn: list, attach, detach, status, export, import.
+- Direct lookup theo id: memory, raw event, history record.
+- Edit/archive official memory từ CLI.
+- Export/import và `scan` để recover registry khi mất mapping.
 - Markdown renderer tốt hơn: index, topic page, decision page, open-loop page.
-- Cơ chế recover khi mất mapping project path.
-- Basic edit flow từ Markdown hoặc command line về source of truth.
+- Adapter tests cho Antigravity, Claude Code, và Codex transcript.
+- Recall mode rõ ràng: contains, FTS, semantic, hybrid.
 
 Kết quả mong muốn: user không cần hiểu schema sâu vẫn có thể xem, sửa, và khôi phục memory.
 
@@ -47,6 +49,8 @@ Phase 3 nâng chất lượng truy vấn:
 
 Kết quả mong muốn: agent nhận context đúng hơn, ngắn hơn, ít nhiễu hơn.
 
+Phase 3 implementation plan is documented in `plan/phase/phase3/`.
+
 ## Phase 4: Hooks And Automation
 
 Phase này mới đưa hook daemon vào:
@@ -57,6 +61,8 @@ Phase này mới đưa hook daemon vào:
 - Adapter cho từng agent.
 
 Kết quả mong muốn: hệ thống bắt đầu tự capture decision/error/preference mà không bắt agent ceremony quá nhiều.
+
+Phase 4 implementation plan is documented in `plan/phase/phase4/`.
 
 ## Phase 5: Web And Merge
 
@@ -69,6 +75,8 @@ Phase này làm các tính năng lớn:
 - Team/cloud sync nếu cần.
 
 Kết quả mong muốn: user quản lý tri thức ở quy mô nhiều project mà không phá boundary.
+
+Phase 5 implementation plan is documented in `plan/phase/phase5/`.
 
 ## Ranh giới quan trọng
 

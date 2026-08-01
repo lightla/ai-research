@@ -36,23 +36,36 @@ const VERSION = "wink-nlp@2.4.0+wink-eng-lite-web-model@1.8.1";
 const LABEL_RULES: Array<{ label: OfflineLabel; patterns: RegExp[] }> = [
   {
     label: "decision",
-    patterns: [/\b(decide|decision|choose|chosen|approved|reject|rejected)\b/i, /\b(chốt|quyết định|lựa chọn)\b/i]
+    patterns: [
+      /\b(decide|decision|choose|chosen|approved|reject|rejected)\b/i,
+      /\b(chốt|quyết định|lựa chọn|chot|quyet dinh|lua chon)\b/i
+    ]
   },
   {
     label: "todo",
-    patterns: [/\b(todo|open loop|follow[- ]?up|pending|next step)\b/i, /\b(cần làm|việc còn|chưa xong|bước tiếp)\b/i]
+    patterns: [
+      /\b(todo|open loop|follow[- ]?up|pending|next step)\b/i,
+      /\b(cần làm|việc còn|chưa xong|bước tiếp|can lam|viec con|chua xong|buoc tiep)\b/i
+    ]
   },
   {
     label: "preference",
-    patterns: [/\b(prefer|preference|from now on|always use|never use|convention)\b/i, /\b(từ nay|quy ước|ưu tiên)\b/i]
+    patterns: [
+      /\b(prefer|preference|from now on|always use|never use|convention)\b/i,
+      /\b(từ nay|quy ước|ưu tiên|tu nay|quy uoc|uu tien)\b/i
+    ]
   },
   {
     label: "error",
-    patterns: [/\b(error|failed|failure|exception|stack trace|crash|bug)\b/i, /\b(lỗi|fail|hỏng)\b/i]
+    patterns: [/\b(error|failed|failure|exception|stack trace|crash|bug)\b/i, /\b(lỗi|fail|hỏng|loi|hong)\b/i]
   },
   {
     label: "question",
-    patterns: [/\?$/, /\b(why|what|how|when|where|should|can we)\b/i, /\b(tại sao|như nào|làm sao|có nên)\b/i]
+    patterns: [
+      /\?$/,
+      /\b(why|what|how|when|where|should|can we)\b/i,
+      /\b(tại sao|như nào|làm sao|có nên|tai sao|nhu nao|lam sao|co nen)\b/i
+    ]
   },
   {
     label: "command",
@@ -60,7 +73,10 @@ const LABEL_RULES: Array<{ label: OfflineLabel; patterns: RegExp[] }> = [
   },
   {
     label: "context",
-    patterns: [/\b(context|architecture|design|rationale|because|constraint)\b/i, /\b(ngữ cảnh|kiến trúc|thiết kế|lý do|ràng buộc)\b/i]
+    patterns: [
+      /\b(context|architecture|design|rationale|because|constraint)\b/i,
+      /\b(ngữ cảnh|kiến trúc|thiết kế|lý do|ràng buộc|ngu canh|kien truc|thiet ke|ly do|rang buoc)\b/i
+    ]
   }
 ];
 

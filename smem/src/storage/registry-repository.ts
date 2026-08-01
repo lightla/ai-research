@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { createProjectId } from "../core/ids";
 import { defaultProjectName, defaultSmartMemoryHome, normalizePath } from "../core/paths";
-import type { ProjectRecord } from "../core/schema";
+import { ProjectRecordSchema, type ProjectRecord } from "../core/schema";
 import { openRegistryDb, type SqliteDatabase } from "./db";
 
 type ProjectRow = {
@@ -70,6 +70,15 @@ export class RegistryRepository {
       )
       .run(projectId, projectName, rootPath, storePath, now, now);
 
+    writeProjectMetadata({
+      projectId,
+      projectName,
+      rootPath,
+      storePath,
+      createdAt: now,
+      lastSeenAt: now
+    });
+
     return {
       projectId,
       projectName,
@@ -101,6 +110,7 @@ export class RegistryRepository {
       this.db
         .prepare("UPDATE projects SET root_path = ?, last_seen_at = ? WHERE project_id = ?")
         .run(rootPath, now, project.projectId);
+      writeProjectMetadata({ ...project, rootPath, lastSeenAt: now });
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -121,6 +131,64 @@ export class RegistryRepository {
     }
 
     return this.attachProject({ cwd: options.cwd, projectId: project.projectId });
+  }
+
+  scanStores(options: { store: string; root?: string; name?: string }): { projects: ProjectRecord[]; skipped: string[] } {
+    const requested = resolve(options.store);
+    const stores = existsSync(join(requested, "memory.sqlite"))
+      ? [requested]
+      : readdirSync(requested, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && existsSync(join(requested, entry.name, "memory.sqlite")))
+          .map((entry) => join(requested, entry.name));
+    const projects: ProjectRecord[] = [];
+    const skipped: string[] = [];
+
+    for (const storePath of stores) {
+      const metadata = readProjectMetadata(storePath);
+      const projectId = metadata?.projectId ?? (basename(storePath).startsWith("proj_") ? basename(storePath) : undefined);
+      const rootPath = metadata?.rootPath ?? (stores.length === 1 ? options.root : undefined);
+      if (!projectId || !rootPath) {
+        skipped.push(`${storePath}: missing project metadata; provide --root for a single store`);
+        continue;
+      }
+
+      const projectName = metadata?.projectName ?? options.name ?? defaultProjectName(rootPath);
+      const existing = this.findById(projectId);
+      const existingAtRoot = this.findByPath(rootPath);
+      if (existingAtRoot && existingAtRoot.projectId !== projectId) {
+        skipped.push(`${storePath}: root already belongs to ${existingAtRoot.projectId}`);
+        continue;
+      }
+      const now = new Date().toISOString();
+      const project: ProjectRecord = existing
+        ? { ...existing, projectName, rootPath: normalizePath(rootPath), storePath, lastSeenAt: now }
+        : {
+            projectId,
+            projectName,
+            rootPath: normalizePath(rootPath),
+            storePath,
+            createdAt: metadata?.createdAt ?? now,
+            lastSeenAt: now
+          };
+
+      if (existing) {
+        this.db
+          .prepare(
+            `UPDATE projects SET project_name = ?, root_path = ?, store_path = ?, last_seen_at = ? WHERE project_id = ?`
+          )
+          .run(project.projectName, project.rootPath, project.storePath, project.lastSeenAt, project.projectId);
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO projects (project_id, project_name, root_path, store_path, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)`
+          )
+          .run(project.projectId, project.projectName, project.rootPath, project.storePath, project.createdAt, project.lastSeenAt);
+      }
+      writeProjectMetadata(project);
+      projects.push(project);
+    }
+
+    return { projects, skipped };
   }
 
   deleteProject(projectId: string): ProjectRecord {
@@ -167,5 +235,22 @@ export class RegistryRepository {
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at
     };
+  }
+}
+
+function writeProjectMetadata(project: ProjectRecord): void {
+  mkdirSync(project.storePath, { recursive: true });
+  writeFileSync(join(project.storePath, "project.json"), `${JSON.stringify(project, null, 2)}\n`, "utf8");
+}
+
+function readProjectMetadata(storePath: string): ProjectRecord | null {
+  const metadataPath = join(storePath, "project.json");
+  if (!existsSync(metadataPath)) {
+    return null;
+  }
+  try {
+    return ProjectRecordSchema.parse(JSON.parse(readFileSync(metadataPath, "utf8")));
+  } catch {
+    return null;
   }
 }

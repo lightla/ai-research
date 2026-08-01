@@ -100,6 +100,32 @@ export function searchRawEvents(options: {
   return matches.slice(-(options.limit ?? 20)).reverse();
 }
 
+export function findRawEventById(eventId: string, home = defaultSmartMemoryHome()): RawEventRecord | null {
+  const queuePath = join(home, "events", "pending.jsonl");
+  if (!existsSync(queuePath)) {
+    return null;
+  }
+
+  const lines = readFileSync(queuePath, "utf8").split(/\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (!line) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (stringField(event, "eventId") === eventId) {
+        return { lineNumber: index + 1, line, event };
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
 export function searchReferencedTranscripts(options: {
   query: string;
   home?: string;
@@ -187,11 +213,81 @@ export function rawThread(options: {
   return { anchor, records };
 }
 
+export function findTranscriptRecordById(recordId: string, home = defaultSmartMemoryHome()): TranscriptRecord | null {
+  for (const transcriptPath of transcriptPathsFromRawEvents({ home })) {
+    if (!existsSync(transcriptPath)) {
+      continue;
+    }
+
+    const lines = readFileSync(transcriptPath, "utf8").split(/\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]?.trim();
+      if (!line) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        const record = { transcriptPath, lineNumber: index + 1, event };
+        if (transcriptRecordId(record) === recordId) {
+          return record;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function transcriptTextForCapture(options: {
+  transcriptPath?: string;
+  captureKind: string;
+  timestamp?: string;
+}): string | undefined {
+  if (!options.transcriptPath || !existsSync(options.transcriptPath)) {
+    return undefined;
+  }
+
+  const wantedKind = options.captureKind === "raw-input" ? "user-input" : options.captureKind === "raw-output" ? "assistant-output" : undefined;
+  if (!wantedKind) {
+    return undefined;
+  }
+
+  const candidates: SmemHistoryRecord[] = [];
+  const lines = readFileSync(options.transcriptPath, "utf8").split(/\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (!line) {
+      continue;
+    }
+    try {
+      const record = normalizeTranscriptRecord({
+        transcriptPath: options.transcriptPath,
+        lineNumber: index + 1,
+        event: JSON.parse(line) as Record<string, unknown>
+      });
+      if (record.recordKind === wantedKind && record.content?.trim()) {
+        candidates.push(record);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const eligible = options.timestamp
+    ? candidates.filter((record) => !record.timestamp || record.timestamp <= options.timestamp!)
+    : candidates;
+  return (eligible.at(-1) ?? candidates.at(-1))?.content;
+}
+
 export function summarizeRawEvent(record: RawEventRecord, query?: string): string {
   const event = record.event;
   const classification = recordField(event, "classification");
   const payload = recordField(event, "payload") ?? {};
   const parts = [
+    `id=${stringField(event, "eventId") ?? `raw#${record.lineNumber}`}`,
     `raw#${record.lineNumber}`,
     stringField(event, "timestamp"),
     `agent=${stringField(event, "agent") ?? "unknown"}`,
@@ -351,17 +447,26 @@ function normalizeTranscriptRecord(record: TranscriptRecord): SmemHistoryRecord 
   const sourceAgent = agentFromSource(fromSource);
   const source = stringField(record.event, "source");
   const type = stringField(record.event, "type");
-  const content = cleanTranscriptContent(stringField(record.event, "content") ?? "");
+  const message = recordField(record.event, "message");
+  const payload = recordField(record.event, "payload");
+  const content = cleanTranscriptContent(
+    stringField(record.event, "content") ??
+      transcriptContent(message) ??
+      transcriptContent(payload) ??
+      ""
+  );
   const thinking = cleanTranscriptContent(stringField(record.event, "thinking") ?? "");
   const toolCalls = arrayField(record.event, "tool_calls");
+  const role = stringField(record.event, "role") ?? stringField(message, "role") ?? stringField(payload, "role");
   const recordKind = transcriptRecordKind({
     ...(source ? { source } : {}),
     ...(type ? { type } : {}),
+    ...(role ? { role } : {}),
     content,
     thinking,
     toolCalls
   });
-  const timestamp = stringField(record.event, "created_at");
+  const timestamp = stringField(record.event, "created_at") ?? stringField(record.event, "timestamp");
 
   return {
     id: transcriptRecordId(record),
@@ -406,11 +511,15 @@ function agentFromSource(source: SmemHistoryRecord["fromSource"]): SmemHistoryRe
 function transcriptRecordKind(input: {
   source?: string;
   type?: string;
+  role?: string;
   content: string;
   thinking: string;
   toolCalls: unknown[];
 }): SmemHistoryRecord["recordKind"] {
   if (input.source === "USER_EXPLICIT" || input.type === "USER_INPUT") {
+    return "user-input";
+  }
+  if (input.type === "user" || input.role === "user") {
     return "user-input";
   }
   if (input.type === "RUN_COMMAND") {
@@ -421,6 +530,9 @@ function transcriptRecordKind(input: {
   }
   if (input.source === "MODEL" && input.type === "PLANNER_RESPONSE" && input.thinking) {
     return "assistant-thinking";
+  }
+  if (input.type === "assistant" || input.role === "assistant" || input.type === "response_item") {
+    return "assistant-output";
   }
   if (input.toolCalls.length > 0) {
     return "tool-call";
@@ -511,6 +623,32 @@ function cleanTranscriptContent(content: string): string {
     .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, "")
     .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, "")
     .trim();
+}
+
+function transcriptContent(input: Record<string, unknown> | undefined): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+  const direct = stringField(input, "content") ?? stringField(input, "text");
+  if (direct) {
+    return direct;
+  }
+  const content = input["content"];
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const parts = content.flatMap((item) => {
+    if (typeof item === "string") {
+      return [item];
+    }
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      const text = stringField(record, "text") ?? stringField(record, "input_text") ?? stringField(record, "output_text");
+      return text ? [text] : [];
+    }
+    return [];
+  });
+  return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 function walkTextFields(input: unknown, path: string[], visit: (path: string[], value: string) => void): void {

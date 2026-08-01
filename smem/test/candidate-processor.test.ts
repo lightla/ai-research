@@ -42,7 +42,7 @@ test("processes legacy raw events that do not have classifier metadata", () => {
   const result = processCandidates({ project, scope: "local", home });
   const memories = new MemoryRepository(project, { home });
 
-  expect(result).toEqual({ scanned: 1, created: 1, skipped: 0 });
+  expect(result).toEqual({ scanned: 1, created: 1, skipped: 0, skippedByReason: { "no-text": 0, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
   expect(memories.listCandidates()).toHaveLength(1);
 
   memories.close();
@@ -77,7 +77,67 @@ test("skips metadata-only hook events", () => {
 
   const result = processCandidates({ project, scope: "local", home });
 
-  expect(result).toEqual({ scanned: 1, created: 0, skipped: 1 });
+  expect(result).toEqual({ scanned: 1, created: 0, skipped: 1, skippedByReason: { "no-text": 1, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
+});
+
+test("uses referenced transcript text when a hook payload contains metadata only", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-test-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
+  tempDirs.push(home, projectDir);
+
+  const registry = new RegistryRepository(home);
+  const project = registry.initProject({ cwd: projectDir, name: "demo" });
+  registry.close();
+
+  const transcriptPath = join(home, "antigravity-cli", "transcript_full.jsonl");
+  mkdirSync(join(home, "antigravity-cli"), { recursive: true });
+  writeFileSync(
+    transcriptPath,
+    `${JSON.stringify({ source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "quyết định dùng SQLite cho memory" })}\n`,
+    "utf8"
+  );
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({
+      eventId: "evt_transcript_fallback",
+      agent: "antigravity",
+      event: "PreInvocation",
+      captureKind: "raw-input",
+      projectPath: projectDir,
+      transcriptPath,
+      timestamp: "2026-08-01T00:00:01Z",
+      payload: { conversationId: "metadata-only" }
+    })}\n`,
+    "utf8"
+  );
+
+  const result = processCandidates({ project, scope: "local", home });
+  const memories = new MemoryRepository(project, { home });
+  expect(result.created).toBe(1);
+  expect(memories.listCandidates()[0]?.content).toContain("quyết định dùng SQLite");
+  memories.close();
+});
+
+test("processing the same capture twice is idempotent", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-test-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
+  tempDirs.push(home, projectDir);
+  const registry = new RegistryRepository(home);
+  const project = registry.initProject({ cwd: projectDir, name: "demo" });
+  registry.close();
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_idempotent", agent: "antigravity", event: "PreInvocation", projectPath: projectDir, signal: "high", payload: { prompt: "quyết định dùng SQLite" } })}\n`,
+    "utf8"
+  );
+
+  const first = processCandidates({ project, scope: "local", home });
+  const second = processCandidates({ project, scope: "local", home });
+  expect(first.created).toBe(1);
+  expect(second.created).toBe(0);
+  expect(second.skippedByReason.duplicate).toBe(1);
 });
 
 test("skips tool-only hook events instead of creating noisy candidates", () => {
@@ -127,5 +187,5 @@ test("skips tool-only hook events instead of creating noisy candidates", () => {
 
   const result = processCandidates({ project, scope: "local", home });
 
-  expect(result).toEqual({ scanned: 1, created: 0, skipped: 1 });
+  expect(result).toEqual({ scanned: 1, created: 0, skipped: 1, skippedByReason: { "no-text": 1, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
 });

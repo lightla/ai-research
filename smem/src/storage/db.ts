@@ -99,6 +99,7 @@ function ensureMemoryColumns(db: SqliteDatabase): void {
 export function openRegistryDb(path: string): SqliteDatabase {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  configureDb(db);
   applyMigrations(db, "registry");
   return db;
 }
@@ -106,6 +107,15 @@ export function openRegistryDb(path: string): SqliteDatabase {
 export function openMemoryDb(path: string): SqliteDatabase {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  configureDb(db);
   applyMigrations(db, "memory");
   return db;
+}
+
+function configureDb(db: SqliteDatabase): void {
+  db.exec(`
+    PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+  `);
 }

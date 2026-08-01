@@ -123,11 +123,16 @@ function classifySignal(event: string, input: HookEventInput): "low" | "medium" 
   if (
     text.includes("decision") ||
     text.includes("quyết định") ||
+    text.includes("quyet dinh") ||
     text.includes("chốt") ||
+    text.includes("chot") ||
     text.includes("remember") ||
     text.includes("nhớ") ||
+    text.includes("nho") ||
     text.includes("todo") ||
-    text.includes("open loop")
+    text.includes("open loop") ||
+    text.includes("cần làm") ||
+    text.includes("can lam")
   ) {
     return "high";
   }

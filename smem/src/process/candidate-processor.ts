@@ -8,12 +8,16 @@ import type { MemoryInput, MemoryType, ProjectRecord } from "../core/schema";
 import type { AgentName } from "../install/agent-installer";
 import type { HookEventInput, NormalizedHookEvent } from "../hook/event-queue";
 import { MemoryRepository } from "../storage/memory-repository";
+import { transcriptTextForCapture } from "../raw/raw-reader";
 
 export type ProcessResult = {
   scanned: number;
   created: number;
   skipped: number;
+  skippedByReason: Record<ProcessSkipReason, number>;
 };
+
+export type ProcessSkipReason = "no-text" | "low-confidence" | "wrong-project" | "unsupported-label" | "duplicate";
 
 export function processCandidates(options: {
   project: ProjectRecord;
@@ -24,7 +28,7 @@ export function processCandidates(options: {
   const home = options.home ?? defaultSmartMemoryHome();
   const queuePath = join(home, "events", "pending.jsonl");
   if (!existsSync(queuePath)) {
-    return { scanned: 0, created: 0, skipped: 0 };
+    return { scanned: 0, created: 0, skipped: 0, skippedByReason: emptySkipReasons() };
   }
 
   const events = readEvents(queuePath).slice(-(options.limit ?? 200));
@@ -32,16 +36,20 @@ export function processCandidates(options: {
   let scanned = 0;
   let created = 0;
   let skipped = 0;
+  const skippedByReason = emptySkipReasons();
 
   try {
     for (const event of events) {
       scanned += 1;
-      if (!shouldCreateCandidate(event, options.project)) {
+      const decision = candidateDecision(event, options.project);
+      if (!decision.ok) {
         skipped += 1;
+        skippedByReason[decision.reason] += 1;
         continue;
       }
       if (repo.hasSourceEvent(event.eventId)) {
         skipped += 1;
+        skippedByReason.duplicate += 1;
         continue;
       }
 
@@ -64,7 +72,7 @@ export function processCandidates(options: {
     repo.close();
   }
 
-  return { scanned, created, skipped };
+  return { scanned, created, skipped, skippedByReason };
 }
 
 function readEvents(path: string): NormalizedHookEvent[] {
@@ -81,31 +89,52 @@ function readEvents(path: string): NormalizedHookEvent[] {
     });
 }
 
-function shouldCreateCandidate(event: NormalizedHookEvent, project: ProjectRecord): boolean {
+function candidateDecision(event: NormalizedHookEvent, project: ProjectRecord): { ok: true } | { ok: false; reason: ProcessSkipReason } {
   if (!textForCandidate(event)) {
-    return false;
+    return { ok: false, reason: "no-text" };
   }
 
   if (event.signal === "low" && event.classification.classifier.confidence < 0.65) {
-    return false;
+    return { ok: false, reason: "low-confidence" };
   }
 
   if (event.projectPath && resolve(event.projectPath) !== resolve(project.rootPath)) {
-    return false;
+    return { ok: false, reason: "wrong-project" };
   }
 
-  return ["decision", "todo", "preference", "error", "context"].includes(event.classification.primaryLabel);
+  return ["decision", "todo", "preference", "error", "context"].includes(event.classification.primaryLabel)
+    ? { ok: true }
+    : { ok: false, reason: "unsupported-label" };
+}
+
+function emptySkipReasons(): Record<ProcessSkipReason, number> {
+  return {
+    "no-text": 0,
+    "low-confidence": 0,
+    "wrong-project": 0,
+    "unsupported-label": 0,
+    duplicate: 0
+  };
 }
 
 function normalizeRawEvent(raw: Record<string, unknown>, originalLine: string): NormalizedHookEvent {
   const payload = recordField(raw, "payload") ?? raw;
   const event = stringField(raw, "event") ?? stringField(payload, "hook_event_name") ?? stringField(payload, "hookEventName") ?? "unknown";
-  const classification = isClassification(raw["classification"])
-    ? raw["classification"]
-    : classifyText(textForClassification(payload));
+  const captureKind = captureKindField(raw["captureKind"]) ?? classifyCaptureKind(event);
   const agent = agentField(raw["agent"]);
   const projectPath = stringField(raw, "projectPath") ?? projectPathFromPayload(agent, payload);
   const transcriptPath = stringField(raw, "transcriptPath") ?? stringField(payload, "transcriptPath") ?? stringField(payload, "transcript_path");
+  const rawTimestamp = stringField(raw, "timestamp");
+  const transcriptText = transcriptTextForCapture({
+    ...(transcriptPath ? { transcriptPath } : {}),
+    captureKind,
+    ...(rawTimestamp ? { timestamp: rawTimestamp } : {})
+  });
+  const classification = transcriptText
+    ? classifyText(transcriptText)
+    : isClassification(raw["classification"])
+      ? raw["classification"]
+      : classifyText(textForClassification(payload));
   const eventId = stringField(raw, "eventId") ?? legacyEventId(originalLine);
   const turnId = stringField(raw, "turnId");
   const sessionId =
@@ -119,7 +148,7 @@ function normalizeRawEvent(raw: Record<string, unknown>, originalLine: string): 
     eventId,
     agent,
     event,
-    captureKind: captureKindField(raw["captureKind"]) ?? classifyCaptureKind(event),
+    captureKind,
     sessionId,
     ...(turnId ? { turnId } : {}),
     ...(projectPath ? { projectPath } : {}),
@@ -211,11 +240,16 @@ function classifySignal(event: string, input: HookEventInput): NormalizedHookEve
   if (
     text.includes("decision") ||
     text.includes("quyết định") ||
+    text.includes("quyet dinh") ||
     text.includes("chốt") ||
+    text.includes("chot") ||
     text.includes("remember") ||
     text.includes("nhớ") ||
+    text.includes("nho") ||
     text.includes("todo") ||
-    text.includes("open loop")
+    text.includes("open loop") ||
+    text.includes("cần làm") ||
+    text.includes("can lam")
   ) {
     return "high";
   }
@@ -269,7 +303,11 @@ function textForCandidate(event: NormalizedHookEvent): string | undefined {
     stringField(payload, "tool_response") ??
     stringField(payload, "toolResponse") ??
     nonEmptyStringField(payload, "error");
-  return direct;
+  return direct ?? transcriptTextForCapture({
+    ...(event.transcriptPath ? { transcriptPath: event.transcriptPath } : {}),
+    captureKind: event.captureKind,
+    timestamp: event.timestamp
+  });
 }
 
 function textForClassification(input: HookEventInput): string {

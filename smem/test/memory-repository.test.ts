@@ -191,3 +191,29 @@ test("indexes and searches semantic vectors with an embedding client", async () 
   memories.close();
   embeddings.close();
 });
+
+test("edits, archives, and imports memories while preserving ids", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-test-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
+  tempDirs.push(home, projectDir);
+
+  const registry = new RegistryRepository(home);
+  const project = registry.initProject({ cwd: projectDir, name: "demo" });
+  registry.close();
+
+  const memories = new MemoryRepository(project, { home });
+  const original = memories.create({ type: "note", content: "old content", tags: ["old"], status: "active" });
+  const edited = memories.update(original.id, { type: "decision", content: "new content", tags: ["new"] });
+  expect(edited.id).toBe(original.id);
+  expect(edited.type).toBe("decision");
+  expect(memories.recall("new content")).toHaveLength(1);
+
+  const archived = memories.archive(original.id);
+  expect(archived.status).toBe("archived");
+  expect(memories.recall("new content")).toHaveLength(0);
+
+  const imported = memories.create({ type: "context", content: "import me", tags: [], status: "active" });
+  const result = memories.importRecords([imported], "skip");
+  expect(result.skipped).toBe(1);
+  memories.close();
+});

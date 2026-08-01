@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"role":"user","content":[{"input_text":"Remember the Codex project decision: use SQLite."}]},"timestamp":"2026-08-02T00:00:00Z"}
+{"type":"response_item","payload":{"role":"assistant","content":[{"output_text":"The project decision is to use SQLite."}]},"timestamp":"2026-08-02T00:00:01Z"}

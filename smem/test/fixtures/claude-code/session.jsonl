@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Remember that Claude Code uses the outsider memory store."}]},"timestamp":"2026-08-02T00:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will keep project memory outside the repository."}]},"timestamp":"2026-08-02T00:00:01Z"}

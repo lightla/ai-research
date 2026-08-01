@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
+import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 
 process.removeAllListeners("warning");
@@ -30,10 +32,18 @@ import { classifyText } from "../classify/offline-classifier";
 import { createEmbeddingClient, type EmbeddingProvider } from "../embedding/embedding-client";
 import { EmbeddingRepository, type SemanticResult } from "../storage/embedding-repository";
 import type { MemoryRecord } from "../core/schema";
+import { rankMemories, type RecallResult } from "../retrieval/retrieval";
+import { defaultSmartMemoryHome } from "../core/paths";
 import { processCandidates } from "../process/candidate-processor";
+import { readMemoryExport, writeMemoryExport } from "../transfer/memory-transfer";
+import { daemonStatus, processOnce, runDaemon, stopDaemon } from "../daemon/daemon";
+import { readEventStats } from "../hook/event-stats";
+import { archiveRawEvents } from "../hook/event-retention";
 import {
   formatRawEventFull,
   formatTranscriptRecordFull,
+  findRawEventById,
+  findTranscriptRecordById,
   isMeaningfulHistoryRecord,
   rawThread,
   searchRaw,
@@ -235,9 +245,11 @@ program
   .option("--type <type>", "Memory type", "note")
   .option("--title <title>", "Memory title")
   .option("--tags <tags>", "Comma-separated tags")
+  .option("--tag <tag>", "Single tag; can be repeated", collectOption, [])
   .option("--scope <scope>", "Memory scope: local or global", "local")
   .argument("<content...>", "Memory content")
-  .action((contentParts: string[], options: { type: string; title?: string; tags?: string; scope: string }) => {
+  .action(
+    (contentParts: string[], options: { type: string; title?: string; tags?: string; tag: string[]; scope: string }) => {
     const type = MemoryTypeSchema.parse(options.type);
     const scope = parseScope(options.scope);
     const content = contentParts.join(" ").trim();
@@ -247,12 +259,13 @@ program
         type,
         ...(options.title ? { title: options.title } : {}),
         content,
-        tags: parseTags(options.tags)
+        tags: parseTags(options.tags, options.tag)
       });
       const memory = repo.create(input);
       console.log(printMemory(memory));
     });
-  });
+    }
+  );
 
 program
   .command("list")
@@ -267,6 +280,110 @@ program
   });
 
 program
+  .command("show <memory-id>")
+  .description("Show one official, candidate, rejected, or archived memory by id")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((memoryId: string, options: { scope: string }) => {
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      const memory = repo.getById(memoryId);
+      if (!memory) {
+        throw new Error(`Memory not found: ${memoryId}`);
+      }
+      console.log(printMemory(memory));
+    });
+  });
+
+program
+  .command("edit <memory-id>")
+  .description("Edit an active or pending-review memory without changing its id")
+  .option("--type <type>", "Memory type")
+  .option("--title <title>", "Memory title")
+  .option("--content <content>", "Memory content")
+  .option("--tags <tags>", "Replace tags with comma-separated values")
+  .option("--clear-title", "Remove the current title")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((memoryId: string, options: { type?: string; title?: string; content?: string; tags?: string; clearTitle?: boolean; scope: string }) => {
+    if (!options.type && options.title === undefined && !options.content && options.tags === undefined && !options.clearTitle) {
+      throw new Error("Provide at least one field to edit: --type, --title, --content, --tags, or --clear-title.");
+    }
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      const type = options.type ? MemoryTypeSchema.parse(options.type) : undefined;
+      console.log(printMemory(repo.update(memoryId, {
+        ...(type ? { type } : {}),
+        ...(options.clearTitle ? { title: null } : options.title !== undefined ? { title: options.title } : {}),
+        ...(options.content ? { content: options.content } : {}),
+        ...(options.tags !== undefined ? { tags: parseTags(options.tags) } : {})
+      })));
+    });
+  });
+
+program
+  .command("archive <memory-id>")
+  .description("Archive an active memory without deleting it")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((memoryId: string, options: { scope: string }) => {
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      console.log(printMemory(repo.archive(memoryId)));
+    });
+  });
+
+program
+  .command("export")
+  .description("Export project memories to a portable JSON file")
+  .requiredOption("--out <path>", "Output JSON path")
+  .option("--project-id <id>", "Project id; defaults to the current directory project")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((options: { out: string; projectId?: string; scope: string }) => {
+    const scope = parseScope(options.scope);
+    withRegistry((registry) => {
+      const project = options.projectId ? registry.findById(options.projectId) : registry.requireCurrentProject(process.cwd());
+      if (!project) {
+        throw new Error(`Project not found: ${options.projectId}`);
+      }
+      const repo = new MemoryRepository(project, { scope });
+      try {
+        const memories = repo.allRecords();
+        const outputPath = writeMemoryExport(options.out, project, scope, memories);
+        console.log(`Exported ${memories.length} memories to ${outputPath}`);
+      } finally {
+        repo.close();
+      }
+    });
+  });
+
+program
+  .command("import <file>")
+  .description("Import memories from a smem JSON export into the current project")
+  .option("--scope <scope>", "Target memory scope: local or global", "local")
+  .option("--on-conflict <mode>", "Conflict behavior: skip or replace", "skip")
+  .action((file: string, options: { scope: string; onConflict: string }) => {
+    if (options.onConflict !== "skip" && options.onConflict !== "replace") {
+      throw new Error(`Invalid conflict mode: ${options.onConflict}. Expected skip or replace.`);
+    }
+    const payload = readMemoryExport(file);
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      const conflict = options.onConflict as "skip" | "replace";
+      const result = repo.importRecords(payload.memories, conflict);
+      console.log(`Imported ${result.imported} memories; skipped ${result.skipped}.`);
+    });
+  });
+
+program
+  .command("scan")
+  .description("Rebuild registry mappings from outsider project stores")
+  .requiredOption("--store <path>", "Project store or directory containing project stores")
+  .option("--root <path>", "Root path for a single legacy store without project.json")
+  .option("--name <name>", "Project name for a legacy store without project.json")
+  .action((options: { store: string; root?: string; name?: string }) => {
+    withRegistry((registry) => {
+      const result = registry.scanStores(options);
+      result.projects.forEach((project) => console.log(printProject(project)));
+      result.skipped.forEach((message) => console.error(`Skipped: ${message}`));
+      console.log(`scanned=${result.projects.length} skipped=${result.skipped.length}`);
+    });
+  });
+
+program
   .command("recall")
   .description("Search memory records")
   .argument("<query...>", "Search query")
@@ -275,21 +392,48 @@ program
   .option("--mode <mode>", "Search mode: contains, fts, semantic, or hybrid", "fts")
   .option("--provider <provider>", "Embedding provider for semantic/hybrid mode", "openai")
   .option("--model <model>", "Embedding model override")
+  .option("--compact", "Print only ids, types, and titles for cheap agent routing")
+  .option("--explain", "Print deterministic match and ranking reasons")
+  .option("--type <type>", "Filter by memory type")
+  .option("--tag <tag>", "Filter by exact memory tag")
+  .option("--topic <topic>", "Filter by tag or offline classification topic")
+  .option("--status <status>", "Filter by status; defaults to active")
   .action(
     async (
       queryParts: string[],
-      options: { limit: number; scope: string; mode: string; provider: string; model?: string }
+      options: {
+        limit: number;
+        scope: string;
+        mode: string;
+        provider: string;
+        model?: string;
+        compact?: boolean;
+        explain?: boolean;
+        type?: string;
+        tag?: string;
+        topic?: string;
+        status?: string;
+      }
     ) => {
       const query = queryParts.join(" ");
       const scope = parseScope(options.scope);
       const mode = parseRecallMode(options.mode);
       const provider = parseEmbeddingProvider(options.provider);
-      const memories = await withMemoryRepositoryAsync(scope, async (repo, project) => {
+      const recallOptions = {
+        query,
+        limit: options.limit,
+        ...(mode === "contains" || mode === "fts" ? { mode } : {}),
+        ...(options.type ? { type: MemoryTypeSchema.parse(options.type) } : {}),
+        ...(options.tag ? { tag: options.tag } : {}),
+        ...(options.topic ? { topic: options.topic } : {}),
+        ...(options.status ? { status: parseMemoryStatus(options.status) } : {})
+      };
+      const results = await withMemoryRepositoryAsync(scope, async (repo, project) => {
         if (mode === "contains") {
-          return repo.contains(query, options.limit);
+          return repo.retrieve(recallOptions);
         }
         if (mode === "fts") {
-          return repo.recall(query, options.limit);
+          return repo.retrieve(recallOptions);
         }
 
         const client = createEmbeddingClient({
@@ -300,19 +444,23 @@ program
         try {
           const semantic = await embeddings.search(query, client, options.limit);
           if (mode === "semantic") {
-            return repo.getByIds(semantic.map((result) => result.memoryId));
+            return semanticRecall(repo, recallOptions, semantic, options.limit);
           }
 
-          return hybridRecall(repo, query, semantic, options.limit);
+          return hybridRecall(repo, recallOptions, semantic, options.limit);
         } finally {
           embeddings.close();
         }
       });
-      console.log(memories.length > 0 ? memories.map(printMemory).join("\n\n") : "No matching memories.");
+      console.log(
+        results.length > 0
+          ? results.map((result) => formatRecallResult(result, options)).join("\n")
+          : "No matching memories."
+      );
     }
   );
 
-program
+const raw = program
   .command("raw")
   .description("Search raw hook captures before they become candidates or memories")
   .argument("<query...>", "Raw search query")
@@ -322,7 +470,7 @@ program
   .option("--json", "Print raw JSON lines")
   .option("--full", "Print full formatted raw event JSON")
   .option("--after <n>", "Compatibility alias for `smem history <query> --after <n>`", parseInteger)
-  .action((queryParts: string[], options: { limit: number; agent?: string; kind?: string; json?: boolean; full?: boolean; after?: number }) => {
+raw.action((queryParts: string[], options: { limit: number; agent?: string; kind?: string; json?: boolean; full?: boolean; after?: number }) => {
     const threadMode = queryParts[0] === "thread";
     const query = (threadMode ? queryParts.slice(1) : queryParts).join(" ");
     if (threadMode || options.after !== undefined) {
@@ -374,7 +522,19 @@ program
     );
   });
 
-program
+raw
+  .command("show <event-id>")
+  .description("Show one raw hook event by its stable event id")
+  .option("--json", "Print the original raw JSONL line")
+  .action((eventId: string, options: { json?: boolean }) => {
+    const record = findRawEventById(eventId);
+    if (!record) {
+      throw new Error(`Raw event not found: ${eventId}`);
+    }
+    console.log(options.json ? record.line : formatRawEventFull(record));
+  });
+
+const history = program
   .command("history")
   .description("Read conversation history from a raw transcript match onward")
   .argument("<query...>", "Raw search query")
@@ -383,7 +543,7 @@ program
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--full", "Print full transcript JSON records")
   .option("--verbose", "Include thinking, tool-only, and command-result records")
-  .action((queryParts: string[], options: { after: number; agent?: string; kind?: string; full?: boolean; verbose?: boolean }) => {
+history.action((queryParts: string[], options: { after: number; agent?: string; kind?: string; full?: boolean; verbose?: boolean }) => {
     const result = rawThread({
       query: queryParts.join(" "),
       after: options.after,
@@ -406,6 +566,18 @@ program
         .map((record) => (options.full ? formatTranscriptRecordFull(record) : summarizeTranscriptRecord(record)))
         .join("\n\n")
     );
+  });
+
+history
+  .command("show <record-id>")
+  .description("Show one normalized transcript record by its stable record id")
+  .option("--full", "Print the original transcript JSON and path")
+  .action((recordId: string, options: { full?: boolean }) => {
+    const record = findTranscriptRecordById(recordId);
+    if (!record) {
+      throw new Error(`Transcript record not found: ${recordId}`);
+    }
+    console.log(options.full ? formatTranscriptRecordFull(record) : summarizeTranscriptRecord(record));
   });
 
 program
@@ -437,16 +609,95 @@ program
   .description("Convert raw hook captures into pending-review candidate memories")
   .option("--scope <scope>", "Memory scope: local or global", "local")
   .option("--limit <n>", "Raw event scan limit", parseInteger, 200)
-  .action((options: { scope: string; limit: number }) => {
+  .option("--background", "Run as a hook-triggered background worker")
+  .action((options: { scope: string; limit: number; background?: boolean }) => {
+    const release = options.background ? acquireProcessLock() : undefined;
+    if (options.background && !release) {
+      return;
+    }
+
     const scope = parseScope(options.scope);
-    withCurrentProject((project) => {
-      const result = processCandidates({
-        project,
-        scope,
-        limit: options.limit
+    try {
+      withCurrentProject((project) => {
+        const result = processCandidates({
+          project,
+          scope,
+          limit: options.limit
+        });
+        if (!options.background) {
+          console.log(formatProcessResult(result));
+        }
       });
-      console.log(`scanned=${result.scanned} created=${result.created} skipped=${result.skipped}`);
+    } finally {
+      release?.();
+    }
+  });
+
+const daemon = program.command("daemon").description("Optional background offline processing worker");
+
+daemon
+  .command("once")
+  .description("Process one raw capture batch and exit")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((options: { scope: string }) => {
+    const result = processOnce({ cwd: process.cwd(), scope: parseScope(options.scope) });
+    console.log(formatProcessResult(result));
+  });
+
+program
+  .command("events")
+  .description("Inspect raw capture queue diagnostics")
+  .command("stats")
+  .description("Show raw queue size and event breakdown")
+  .action(() => {
+    console.log(JSON.stringify(readEventStats(), null, 2));
+  });
+
+const events = program.commands.find((command) => command.name() === "events");
+events
+  ?.command("archive")
+  .description("Move old raw events to a recoverable archive")
+  .requiredOption("--older-than <days>", "Archive events older than this many days", parsePositiveNumber)
+  .option("--apply", "Apply the archive operation; without this flag only prints a preview")
+  .action((options: { olderThan: number; apply?: boolean }) => {
+    if (!options.apply) {
+      console.log(`Preview only. Re-run with --apply to archive events older than ${options.olderThan} days.`);
+      return;
+    }
+    console.log(JSON.stringify(archiveRawEvents({ olderThanDays: options.olderThan }), null, 2));
+  });
+
+daemon
+  .command("run")
+  .description("Run the optional persistent offline processing daemon in the foreground")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .option("--interval <ms>", "Processing interval in milliseconds", parseInteger, 1000)
+  .action(async (options: { scope: string; interval: number }) => {
+    await runDaemon({
+      cwd: process.cwd(),
+      scope: parseScope(options.scope),
+      intervalMs: options.interval,
+      onCycle: (result) => {
+        if (result.created > 0) {
+          console.error(`smem daemon: scanned=${result.scanned} created=${result.created} skipped=${result.skipped}`);
+        }
+      }
     });
+  });
+
+daemon
+  .command("status")
+  .description("Show the local daemon status")
+  .action(() => {
+    const status = daemonStatus();
+    console.log(status ? JSON.stringify(status, null, 2) : "smem daemon is not running.");
+  });
+
+daemon
+  .command("stop")
+  .description("Stop the local daemon without touching raw data")
+  .action(() => {
+    console.log(stopDaemon() ? "Stop signal sent to smem daemon." : "smem daemon is not running.");
   });
 
 program
@@ -487,9 +738,11 @@ program
   .command("context")
   .description("Print compact project context for an agent")
   .option("--scope <scope>", "Memory scope: local or global", "local")
-  .action((options: { scope: string }) => {
+  .option("--limit <n>", "Maximum official memories", parseInteger, 15)
+  .option("--max-chars <n>", "Maximum rendered characters", parseInteger, 12000)
+  .action((options: { scope: string; limit: number; maxChars: number }) => {
     withMemoryRepository(parseScope(options.scope), (repo) => {
-      const context = repo.context();
+      const context = repo.context({ limit: options.limit, maxChars: options.maxChars });
       console.log(context || "No context memories found.");
     });
   });
@@ -601,12 +854,62 @@ function parseInteger(value: string): number {
   return parsed;
 }
 
-function parseTags(value: string | undefined): string[] {
-  if (!value) {
-    return [];
+function parsePositiveNumber(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive number: ${value}`);
   }
+  return parsed;
+}
 
-  return value
+function compactMemory(memory: MemoryRecord): string {
+  return `${memory.id} type=${memory.type} status=${memory.status}${memory.title ? ` title=${memory.title}` : ""}`;
+}
+
+function formatProcessResult(result: { scanned: number; created: number; skipped: number; skippedByReason: Record<string, number> }): string {
+  const reasons = Object.entries(result.skippedByReason)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(",");
+  return `scanned=${result.scanned} created=${result.created} skipped=${result.skipped}${reasons ? ` reasons=${reasons}` : ""}`;
+}
+
+function acquireProcessLock(): (() => void) | null {
+  const lockDir = join(defaultSmartMemoryHome(), "events");
+  const lockPath = join(lockDir, "process.lock");
+  mkdirSync(lockDir, { recursive: true });
+
+  try {
+    const descriptor = openSync(lockPath, "wx");
+    return () => {
+      closeSync(descriptor);
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Another worker may have already cleaned up a stale lock.
+      }
+    };
+  } catch {
+    try {
+      const age = Date.now() - statSync(lockPath).mtimeMs;
+      if (age > 5 * 60 * 1000) {
+        unlinkSync(lockPath);
+        return acquireProcessLock();
+      }
+    } catch {
+      // A concurrent worker may be creating or removing the lock.
+    }
+    return null;
+  }
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseTags(value: string | undefined, repeated: string[] = []): string[] {
+  return [value ?? "", ...repeated]
+    .join(",")
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
@@ -618,6 +921,13 @@ function parseRecallMode(value: string): "contains" | "fts" | "semantic" | "hybr
   }
 
   throw new Error(`Invalid recall mode: ${value}. Expected contains, fts, semantic, or hybrid.`);
+}
+
+function parseMemoryStatus(value: string): MemoryRecord["status"] {
+  if (["active", "pending-review", "rejected", "superseded", "archived"].includes(value)) {
+    return value as MemoryRecord["status"];
+  }
+  throw new Error(`Invalid memory status: ${value}.`);
 }
 
 function parseCaptureKind(value: string): "raw-input" | "raw-output" | "tool-event" | "raw-event" {
@@ -636,14 +946,19 @@ function parseEmbeddingProvider(value: string): EmbeddingProvider {
   throw new Error(`Invalid embedding provider: ${value}. Expected openai.`);
 }
 
-function hybridRecall(repo: MemoryRepository, query: string, semantic: SemanticResult[], limit: number): MemoryRecord[] {
-  const lexical = repo.recall(query, limit);
+function hybridRecall(
+  repo: MemoryRepository,
+  options: Parameters<MemoryRepository["retrieve"]>[0],
+  semantic: SemanticResult[],
+  limit: number
+): RecallResult[] {
+  const lexical = repo.retrieve({ ...options, limit });
   const scores = new Map<string, number>();
 
   for (let index = 0; index < lexical.length; index += 1) {
-    const memory = lexical[index];
-    if (memory) {
-      scores.set(memory.id, Math.max(scores.get(memory.id) ?? 0, 1 - index * 0.02));
+    const result = lexical[index];
+    if (result) {
+      scores.set(result.memory.id, Math.max(scores.get(result.memory.id) ?? 0, 1 - index * 0.02));
     }
   }
 
@@ -656,5 +971,54 @@ function hybridRecall(repo: MemoryRepository, query: string, semantic: SemanticR
     .slice(0, limit)
     .map(([id]) => id);
 
-  return repo.getByIds(orderedIds);
+  const byId = new Map(lexical.map((result) => [result.memory.id, result]));
+  const semanticMemories = repo.getByIds(semantic.map((result) => result.memoryId));
+  for (const result of rankMemories(semanticMemories, { ...options, query: "", limit })) {
+    byId.set(result.memory.id, result);
+  }
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter((result): result is RecallResult => Boolean(result));
+}
+
+function semanticRecall(
+  repo: MemoryRepository,
+  options: Parameters<MemoryRepository["retrieve"]>[0],
+  semantic: SemanticResult[],
+  limit: number
+): RecallResult[] {
+  const memories = repo.getByIds(semantic.map((result) => result.memoryId));
+  const byId = new Map(rankMemories(memories, { ...options, query: "", limit }).map((result) => [result.memory.id, result]));
+  return semantic
+    .map((match) => {
+      const base = byId.get(match.memoryId);
+      return base
+        ? {
+            memory: base.memory,
+            reason: {
+              score: match.score,
+              matches: ["semantic"],
+              adjustments: [`embedding:${match.score.toFixed(3)}`]
+            }
+          }
+        : undefined;
+    })
+    .filter((result): result is RecallResult => Boolean(result))
+    .slice(0, limit);
+}
+
+function formatRecallResult(
+  result: RecallResult,
+  options: { compact?: boolean; explain?: boolean }
+): string {
+  const memory = result.memory;
+  if (options.compact) {
+    const title = memory.title ? ` title=${memory.title}` : "";
+    const reason = options.explain ? ` score=${result.reason.score.toFixed(2)} matches=${result.reason.matches.join(",")}` : "";
+    return `${memory.id} type=${memory.type} status=${memory.status}${title}${reason}`;
+  }
+  const output = printMemory(memory);
+  return options.explain
+    ? `${output}\nmatch: ${result.reason.matches.join(", ") || "filter-only"}\nrank: ${result.reason.adjustments.join(", ")} score=${result.reason.score.toFixed(2)}`
+    : output;
 }
