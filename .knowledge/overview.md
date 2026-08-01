@@ -78,6 +78,7 @@ Hướng hợp lý nhất là một hệ hybrid, nhưng tối giản:
 | **memweave** | BM25 (FTS5) + sqlite-vec, MMR rerank | Không có | Temporal decay (exp formula) | Không native | Có (Markdown files + SQLite) | Markdown source + SQLite derived |
 | **Memori** | Vector embeddings + semantic triples | Không có | Không có | Intercept LLM client calls | Có (BYODB local) | Rust + PostgreSQL/custom |
 | **SimpleMem** | Hybrid (LLM-based extraction) | EvolveMem iterative tuning | Không có | Không native | Không rõ | LLM-dependent |
+| **ECC** | N/A (harness framework, không phải memory system) | Instinct clustering → skill/command/agent (async, Haiku) | Project-scoped instincts + confidence 0.3–0.9, promote project→global sau 2+ projects | 6 types (PreToolUse, PostToolUse, UserPromptSubmit, Stop, PreCompact, Notification) + runtime gate (ECC_HOOK_PROFILE, ECC_DISABLED_HOOKS) | Có (local-first) | SQLite (instincts) + file-based skills |
 
 ## Gap Analysis — Cái chưa ai làm tốt
 
@@ -432,6 +433,16 @@ Pipeline học của nó dựa trên tính kỷ luật cưỡng chế quy trình
 ### `sqlite-ai`
 - Là SQLite extension cho LLM inference (llama.cpp), không phải memory system
 - Không liên quan đến memory design — nhầm với sqlite-sync (CRDT repo khác)
+
+### `ECC` (Everything Claude Code)
+*Note: ECC là agent harness framework, không phải memory system. Relevant như reference pattern cho hook design và cross-agent bootstrap.*
+- Có hỗ trợ **6-type hook system** với **runtime gate** không cần edit config: `ECC_HOOK_PROFILE=minimal|standard|strict`, `ECC_DISABLED_HOOKS=hook1,hook2` — pattern này rất mạnh cho smem hook layer
+- Có hỗ trợ **cross-harness bootstrap**: inject 1 dòng vào config file của agent (CLAUDE.md/AGENTS.md/.cursorrules) → agent mới self-onboard. Pattern này validates đúng design của `scmem install`
+- Có hỗ trợ **project-scoped instincts** với hash isolation (git remote URL/repo path) — promote lên global sau 2+ projects, dùng hysteresis để tránh oscillation. Là implementation của global/local boundary
+- Có hỗ trợ **observer lifecycle với lease model**: SessionStart write project-scoped lease → SessionEnd remove lease → observer dừng khi không còn lease nào. Pattern sạch cho daemon lifecycle
+- Có hỗ trợ **knowledge-ops skill**: 6-layer knowledge architecture (GitHub/Linear → memory files → MCP graph → KB repo → external DB → local archive) với rule "deduplicate before storing"
+- Không phải memory system: không có decay, versioning, structured schema, hay session continuity tự động
+- Hook system đòi CommonJS scripts — không phải native hook cho mọi agent (chỉ Claude Code native; agents khác qua adapter)
 
 ## Khuyến nghị cho hệ riêng của bạn
 Nếu mục tiêu là build solution riêng, mình sẽ giữ hệ rất gọn:
