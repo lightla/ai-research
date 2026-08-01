@@ -1,0 +1,42 @@
+{
+  "name": "smem",
+  "version": "0.1.0",
+  "description": "Smart Memory CLI core MVP",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "./dist/cli/index.js",
+  "bin": {
+    "smem": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "clean": "node scripts/clean-dist.mjs",
+    "dev": "tsx src/cli/index.ts",
+    "install:global": "npm run build && npm install -g .",
+    "uninstall:global": "npm uninstall -g smem",
+    "install:script": "sh ./install.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smem": "tsx src/cli/index.ts"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "wink-eng-lite-web-model": "^1.8.1",
+    "wink-nlp": "^2.4.0",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
