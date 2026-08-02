@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { base58FromBytes } from "../core/ids";
@@ -43,8 +43,10 @@ export function searchRaw(options: {
   query: string;
   home?: string;
   limit?: number;
+  offset?: number;
   agent?: string;
   kind?: string;
+  projectPath?: string;
 }): RawSearchResult {
   const events = searchRawEvents(options);
   const transcripts = searchReferencedTranscripts(options);
@@ -55,8 +57,10 @@ export function searchRawEvents(options: {
   query: string;
   home?: string;
   limit?: number;
+  offset?: number;
   agent?: string;
   kind?: string;
+  projectPath?: string;
 }): RawEventRecord[] {
   const queuePath = join(options.home ?? defaultSmartMemoryHome(), "events", "pending.jsonl");
   if (!existsSync(queuePath)) {
@@ -89,6 +93,9 @@ export function searchRawEvents(options: {
     if (options.kind && event["captureKind"] !== options.kind) {
       continue;
     }
+    if (options.projectPath && event["projectPath"] !== options.projectPath) {
+      continue;
+    }
 
     matches.push({
       lineNumber: index + 1,
@@ -97,7 +104,10 @@ export function searchRawEvents(options: {
     });
   }
 
-  return matches.slice(-(options.limit ?? 20)).reverse();
+  // `matches` accumulates oldest-first (file order); reverse for newest-first paging.
+  const newestFirst = matches.slice().reverse();
+  const offset = options.offset ?? 0;
+  return newestFirst.slice(offset, offset + (options.limit ?? 20));
 }
 
 export function findRawEventById(eventId: string, home = defaultSmartMemoryHome()): RawEventRecord | null {
@@ -130,13 +140,12 @@ export function searchReferencedTranscripts(options: {
   query: string;
   home?: string;
   limit?: number;
+  offset?: number;
   agent?: string;
   kind?: string;
+  projectPath?: string;
 }): TranscriptRecord[] {
   const query = options.query.trim().toLowerCase();
-  if (!query) {
-    return [];
-  }
 
   const transcriptPaths = transcriptPathsFromRawEvents(options);
   const matches: TranscriptRecord[] = [];
@@ -149,7 +158,12 @@ export function searchReferencedTranscripts(options: {
     const lines = readFileSync(transcriptPath, "utf8").split(/\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]?.trim();
-      if (!line || !line.toLowerCase().includes(query)) {
+      if (!line) {
+        continue;
+      }
+      // An empty query means "list everything" (used to browse history without typing),
+      // so only apply the substring filter when the caller actually typed something.
+      if (query && !line.toLowerCase().includes(query)) {
         continue;
       }
 
@@ -165,9 +179,18 @@ export function searchReferencedTranscripts(options: {
     }
   }
 
-  return matches
-    .sort((left, right) => transcriptRank(right, query) - transcriptRank(left, query))
-    .slice(0, options.limit ?? 20);
+  const sorted = query
+    ? matches.sort((left, right) => transcriptRank(right, query) - transcriptRank(left, query))
+    : matches.sort((left, right) => recencyKey(right) - recencyKey(left));
+
+  const offset = options.offset ?? 0;
+  return sorted.slice(offset, offset + (options.limit ?? 20));
+}
+
+function recencyKey(record: TranscriptRecord): number {
+  const timestamp = normalizeTranscriptRecord(record).timestamp;
+  const parsed = timestamp ? Date.parse(timestamp) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function rawThread(options: {
@@ -191,22 +214,43 @@ export function rawThread(options: {
   const after = options.after ?? 10;
   const records: TranscriptRecord[] = [];
   const lines = readFileSync(anchor.transcriptPath, "utf8").split(/\n/);
-  const end = Math.min(lines.length, anchor.lineNumber + after);
 
-  for (let lineNumber = anchor.lineNumber; lineNumber <= end; lineNumber += 1) {
+  // `after` counts meaningful records (user-input/assistant-output) found beyond the anchor, not
+  // raw lines — a match is often followed by several thinking/tool-call/tool-result lines before
+  // the next real conversation turn, so counting raw lines made `--after 1` and `--after 3` look
+  // identical whenever the next turn was buried past line 3.
+  let meaningfulAfter = 0;
+  for (let lineNumber = anchor.lineNumber; lineNumber <= lines.length; lineNumber += 1) {
     const line = lines[lineNumber - 1]?.trim();
     if (!line) {
       continue;
     }
 
+    let record: TranscriptRecord;
     try {
-      records.push({
+      record = {
         transcriptPath: anchor.transcriptPath,
         lineNumber,
         event: JSON.parse(line) as Record<string, unknown>
-      });
+      };
     } catch {
       continue;
+    }
+
+    records.push(record);
+
+    if (lineNumber === anchor.lineNumber) {
+      if (after <= 0) {
+        break;
+      }
+      continue;
+    }
+
+    if (isMeaningfulHistoryRecord(record)) {
+      meaningfulAfter += 1;
+      if (meaningfulAfter >= after) {
+        break;
+      }
     }
   }
 
@@ -239,6 +283,132 @@ export function findTranscriptRecordById(recordId: string, home = defaultSmartMe
   }
 
   return null;
+}
+
+// Rewrites a transcript record's content in place, keyed by its stable id — independent of
+// whether the edit is ever promoted into an official memory. Different agents nest their text in
+// different shapes (a top-level `content` string for antigravity, `message.content`/`payload.content`
+// arrays of text blocks for claude-code/codex), so this mirrors normalizeTranscriptRecord's
+// extraction path in reverse rather than assuming one fixed shape.
+//
+// Record ids are a hash of (path, line number, event JSON) — see transcriptRecordId — so editing
+// content necessarily changes the id. Returns the NEW id (or null if the record wasn't found) so
+// callers can keep tracking the edited record instead of looking it up by its now-stale old id.
+export function updateTranscriptRecordContent(
+  recordId: string,
+  newContent: string,
+  home = defaultSmartMemoryHome()
+): string | null {
+  const record = findTranscriptRecordById(recordId, home);
+  if (!record) {
+    return null;
+  }
+
+  const updatedEvent = withUpdatedContent(record.event, newContent);
+  if (!updatedEvent) {
+    throw new Error("This record's raw format doesn't support in-place content editing.");
+  }
+
+  const lines = readFileSync(record.transcriptPath, "utf8").split(/\n/);
+  const targetIndex = record.lineNumber - 1;
+  if (targetIndex < 0 || targetIndex >= lines.length) {
+    return null;
+  }
+
+  lines[targetIndex] = JSON.stringify(updatedEvent);
+  writeFileSync(record.transcriptPath, lines.join("\n"), "utf8");
+  return transcriptRecordId({ transcriptPath: record.transcriptPath, lineNumber: record.lineNumber, event: updatedEvent });
+}
+
+function withUpdatedContent(event: Record<string, unknown>, newContent: string): Record<string, unknown> | null {
+  if (typeof event["content"] === "string") {
+    return { ...event, content: newContent };
+  }
+
+  const contentArray = event["content"];
+  if (Array.isArray(contentArray) && contentArray.length === 1) {
+    const item = contentArray[0];
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const textKey = (["text", "input_text", "output_text"] as const).find(
+        (key) => typeof (item as Record<string, unknown>)[key] === "string"
+      );
+      if (textKey) {
+        return { ...event, content: [{ ...(item as Record<string, unknown>), [textKey]: newContent }] };
+      }
+    }
+  }
+
+  for (const key of ["message", "payload"]) {
+    const nested = event[key];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const updatedNested = withUpdatedContent(nested as Record<string, unknown>, newContent);
+      if (updatedNested) {
+        return { ...event, [key]: updatedNested };
+      }
+    }
+  }
+
+  if (typeof event["thinking"] === "string" && !event["content"]) {
+    return { ...event, thinking: newContent };
+  }
+
+  return null;
+}
+
+export function deleteRawEventById(eventId: string, home = defaultSmartMemoryHome()): boolean {
+  const queuePath = join(home, "events", "pending.jsonl");
+  if (!existsSync(queuePath)) {
+    return false;
+  }
+
+  const lines = readFileSync(queuePath, "utf8").split(/\n/);
+  const kept: string[] = [];
+  let removed = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (!removed) {
+      try {
+        const event = JSON.parse(trimmed) as Record<string, unknown>;
+        if (stringField(event, "eventId") === eventId) {
+          removed = true;
+          continue;
+        }
+      } catch {
+        // Keep unparsable lines untouched.
+      }
+    }
+    kept.push(trimmed);
+  }
+
+  if (!removed) {
+    return false;
+  }
+
+  writeFileSync(queuePath, kept.length > 0 ? `${kept.join("\n")}\n` : "", "utf8");
+  return true;
+}
+
+// Transcript record ids are a hash of (path, line number, event JSON), so deleting a line shifts
+// every later record's id — that's fine since ids are always recomputed from current file content
+// on demand, never persisted elsewhere.
+export function deleteTranscriptRecordById(recordId: string, home = defaultSmartMemoryHome()): boolean {
+  const record = findTranscriptRecordById(recordId, home);
+  if (!record) {
+    return false;
+  }
+
+  const lines = readFileSync(record.transcriptPath, "utf8").split(/\n/);
+  const targetIndex = record.lineNumber - 1;
+  if (targetIndex < 0 || targetIndex >= lines.length) {
+    return false;
+  }
+
+  lines.splice(targetIndex, 1);
+  writeFileSync(record.transcriptPath, lines.join("\n"), "utf8");
+  return true;
 }
 
 export function transcriptTextForCapture(options: {
@@ -352,6 +522,7 @@ function transcriptPathsFromRawEvents(options: {
   home?: string;
   agent?: string;
   kind?: string;
+  projectPath?: string;
 }): string[] {
   const queuePath = join(options.home ?? defaultSmartMemoryHome(), "events", "pending.jsonl");
   if (!existsSync(queuePath)) {
@@ -371,6 +542,9 @@ function transcriptPathsFromRawEvents(options: {
         continue;
       }
       if (options.kind && event["captureKind"] !== options.kind) {
+        continue;
+      }
+      if (options.projectPath && event["projectPath"] !== options.projectPath) {
         continue;
       }
       const transcriptPath = stringField(event, "transcriptPath") ?? stringField(recordField(event, "payload"), "transcriptPath");
@@ -442,7 +616,7 @@ function matchedTranscriptDetails(event: Record<string, unknown>, query?: string
     : JSON.stringify(event);
 }
 
-function normalizeTranscriptRecord(record: TranscriptRecord): SmemHistoryRecord {
+export function normalizeTranscriptRecord(record: TranscriptRecord): SmemHistoryRecord {
   const fromSource = detectTranscriptSource(record.transcriptPath);
   const sourceAgent = agentFromSource(fromSource);
   const source = stringField(record.event, "source");

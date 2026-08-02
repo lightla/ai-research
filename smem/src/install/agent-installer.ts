@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export type AgentName = "codex" | "claude-code" | "antigravity";
@@ -49,20 +50,32 @@ export function installAgent(options: { agent: AgentName; cwd: string; dryRun?: 
   };
 }
 
-export function installAgentHooks(options: { agent: AgentName; cwd: string; dryRun?: boolean }): InstallResult {
-  const cwd = resolve(options.cwd);
-  const filePath = hookFilePath(options.agent, cwd);
+export function installAgentHooks(options: {
+  agent: AgentName;
+  cwd: string;
+  global?: boolean;
+  home?: string;
+  dryRun?: boolean;
+}): InstallResult {
+  const filePath = options.global
+    ? globalHookFilePath(options.agent, options.home)
+    : hookFilePath(options.agent, resolve(options.cwd));
+  return writeMergedHooks(options.agent, filePath, options.dryRun ?? false);
+}
+
+function writeMergedHooks(agent: AgentName, filePath: string, dryRun: boolean): InstallResult {
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-  const next = JSON.stringify(hookConfig(options.agent), null, 2) + "\n";
+  const merged = mergeHookConfig(existing, agent);
+  const next = JSON.stringify(merged, null, 2) + "\n";
   const changed = existing !== next;
 
-  if (changed && !options.dryRun) {
+  if (changed && !dryRun) {
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, next, "utf8");
   }
 
   return {
-    agent: options.agent,
+    agent,
     filePath,
     changed,
     kind: "hooks"
@@ -88,9 +101,16 @@ export function uninstallAgent(options: { agent: AgentName; cwd: string; dryRun?
   };
 }
 
-export function uninstallAgentHooks(options: { agent: AgentName; cwd: string; dryRun?: boolean }): InstallResult {
-  const cwd = resolve(options.cwd);
-  const filePath = hookFilePath(options.agent, cwd);
+export function uninstallAgentHooks(options: {
+  agent: AgentName;
+  cwd: string;
+  global?: boolean;
+  home?: string;
+  dryRun?: boolean;
+}): InstallResult {
+  const filePath = options.global
+    ? globalHookFilePath(options.agent, options.home)
+    : hookFilePath(options.agent, resolve(options.cwd));
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
 
   if (!existing) {
@@ -133,9 +153,11 @@ export function installAgents(options: { agents: AgentName[]; cwd: string; dryRu
   return results;
 }
 
-export function installAgentsHooks(options: { agents: AgentName[]; cwd: string; dryRun?: boolean }): InstallResult[] {
+export function installAgentsHooks(options: { agents: AgentName[]; cwd: string; global?: boolean; dryRun?: boolean }): InstallResult[] {
   const dryRun = options.dryRun ?? false;
-  return options.agents.map((agent) => installAgentHooks({ agent, cwd: options.cwd, dryRun }));
+  return options.agents.map((agent) =>
+    installAgentHooks({ agent, cwd: options.cwd, dryRun, ...(options.global !== undefined ? { global: options.global } : {}) })
+  );
 }
 
 export function uninstallAgents(options: { agents: AgentName[]; cwd: string; dryRun?: boolean }): InstallResult[] {
@@ -143,9 +165,11 @@ export function uninstallAgents(options: { agents: AgentName[]; cwd: string; dry
   return options.agents.map((agent) => uninstallAgent({ agent, cwd: options.cwd, dryRun }));
 }
 
-export function uninstallAgentsHooks(options: { agents: AgentName[]; cwd: string; dryRun?: boolean }): InstallResult[] {
+export function uninstallAgentsHooks(options: { agents: AgentName[]; cwd: string; global?: boolean; dryRun?: boolean }): InstallResult[] {
   const dryRun = options.dryRun ?? false;
-  return options.agents.map((agent) => uninstallAgentHooks({ agent, cwd: options.cwd, dryRun }));
+  return options.agents.map((agent) =>
+    uninstallAgentHooks({ agent, cwd: options.cwd, dryRun, ...(options.global !== undefined ? { global: options.global } : {}) })
+  );
 }
 
 export function parseAgentName(value: string): AgentName {
@@ -291,6 +315,14 @@ function hookFilePath(agent: AgentName, cwd: string): string {
   }
 }
 
+// User-level equivalent of hookFilePath, so a hook applies to every project without a per-project
+// install. Claude Code is confirmed to read hooks from `~/.claude/settings.json`. Codex and
+// Antigravity's global config locations are inferred by analogy with their per-project layout and
+// are not independently verified — test by chatting once after install and checking `smem raw`.
+function globalHookFilePath(agent: AgentName, home?: string): string {
+  return hookFilePath(agent, home ?? homedir());
+}
+
 function hookConfig(agent: AgentName): Record<string, unknown> {
   switch (agent) {
     case "codex":
@@ -324,6 +356,53 @@ function hookConfig(agent: AgentName): Record<string, unknown> {
         }
       };
   }
+}
+
+// `.claude/settings.json` and `.codex/hooks.json` are general-purpose config files other tools
+// also write hook entries into, so installing smem's hooks must merge into the existing per-event
+// arrays rather than overwrite the file — `.agents/hooks.json` is smem-owned by convention (nested
+// under its own "smem-capture" key) so a plain merge at the top level is sufficient there.
+function mergeHookConfig(existingRaw: string, agent: AgentName): Record<string, unknown> {
+  let existing: Record<string, unknown> = {};
+  if (existingRaw.trim()) {
+    try {
+      const parsed = JSON.parse(existingRaw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Existing file isn't valid JSON; fall back to treating it as empty rather than guessing.
+    }
+  }
+
+  const incoming = hookConfig(agent);
+
+  if (agent === "antigravity") {
+    return { ...existing, ...incoming };
+  }
+
+  const existingHooks =
+    existing["hooks"] && typeof existing["hooks"] === "object" && !Array.isArray(existing["hooks"])
+      ? (existing["hooks"] as Record<string, unknown[]>)
+      : {};
+  const incomingHooks = (incoming["hooks"] as Record<string, unknown[]>) ?? {};
+
+  const mergedHooks: Record<string, unknown[]> = { ...existingHooks };
+  for (const [eventName, entries] of Object.entries(incomingHooks)) {
+    const current = Array.isArray(mergedHooks[eventName]) ? mergedHooks[eventName] : [];
+    const withoutOurs = current.filter((entry) => !isOwnHookGroup(entry, agent));
+    mergedHooks[eventName] = [...withoutOurs, ...entries];
+  }
+
+  return { ...existing, hooks: mergedHooks };
+}
+
+function isOwnHookGroup(entry: unknown, agent: AgentName): boolean {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return false;
+  }
+  const hooks = (entry as { hooks?: unknown }).hooks;
+  return Array.isArray(hooks) && hooks.some((hook) => isSmemHookCommand(hook, agent));
 }
 
 function codexHandler(agent: AgentName, event: string): Record<string, unknown> {

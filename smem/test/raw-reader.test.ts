@@ -3,14 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import {
+  deleteRawEventById,
+  deleteTranscriptRecordById,
   findRawEventById,
   findTranscriptRecordById,
   formatRawEventFull,
+  isMeaningfulHistoryRecord,
+  normalizeTranscriptRecord,
   rawThread,
   searchRawEvents,
+  searchReferencedTranscripts,
   summarizeRawEvent,
   summarizeTranscriptRecord,
-  transcriptRecordId
+  transcriptRecordId,
+  updateTranscriptRecordContent
 } from "../src/raw/raw-reader";
 
 const tempDirs: string[] = [];
@@ -88,6 +94,38 @@ test("prints transcript history from the best raw match onward", () => {
   expect(result.records[1]?.event["content"]).toBe("output stest-a888");
 });
 
+test("--after counts meaningful records, skipping thinking/tool-call noise in between", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "antigravity-cli", "transcript_full.jsonl");
+  mkdirSync(join(home, "antigravity-cli"), { recursive: true });
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_test", agent: "antigravity", transcriptPath })}\n`,
+    "utf8"
+  );
+
+  writeFileSync(
+    transcriptPath,
+    [
+      { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "input stest-k001" },
+      { type: "RUN_COMMAND", created_at: "2026-08-01T00:00:01Z", content: "ls" },
+      { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:02Z", thinking: "considering next step" },
+      { type: "RUN_COMMAND", created_at: "2026-08-01T00:00:03Z", content: "grep" },
+      { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:04Z", content: "output stest-a888" }
+    ].map((event) => JSON.stringify(event)).join("\n"),
+    "utf8"
+  );
+
+  const shallow = rawThread({ home, query: "stest-k001", after: 1 });
+  expect(shallow.records.filter(isMeaningfulHistoryRecord)).toHaveLength(2);
+  expect(shallow.records.at(-1)?.event["content"]).toBe("output stest-a888");
+
+  const anchorOnly = rawThread({ home, query: "stest-k001", after: 0 });
+  expect(anchorOnly.records).toHaveLength(1);
+});
+
 test("finds raw events and normalized transcript records by stable id", () => {
   const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
   tempDirs.push(home);
@@ -135,4 +173,200 @@ test.each([
   expect(first).toContain("Remember");
   expect(second).toContain("role=assistant");
   expect(second).toContain(label === "Codex" ? "SQLite" : "outside");
+});
+
+test("deletes a raw event by id without touching other lines", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    [
+      { eventId: "evt_keep_1", agent: "antigravity", event: "PostToolUse" },
+      { eventId: "evt_target", agent: "antigravity", event: "PostToolUse" },
+      { eventId: "evt_keep_2", agent: "antigravity", event: "PostToolUse" }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+
+  expect(findRawEventById("evt_target", home)).not.toBeNull();
+  expect(deleteRawEventById("evt_target", home)).toBe(true);
+  expect(findRawEventById("evt_target", home)).toBeNull();
+  expect(findRawEventById("evt_keep_1", home)?.event["eventId"]).toBe("evt_keep_1");
+  expect(findRawEventById("evt_keep_2", home)?.event["eventId"]).toBe("evt_keep_2");
+  expect(deleteRawEventById("evt_target", home)).toBe(false);
+});
+
+test("deletes a transcript record by id without touching other lines", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "transcript_full.jsonl");
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_test", agent: "antigravity", transcriptPath })}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    transcriptPath,
+    [
+      { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "keep me" },
+      { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:01Z", content: "delete me stest-x1" },
+      { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:02Z", content: "keep me too" }
+    ].map((event) => JSON.stringify(event)).join("\n"),
+    "utf8"
+  );
+
+  const [target] = searchReferencedTranscripts({ home, query: "stest-x1" });
+  const targetId = transcriptRecordId(target!);
+  expect(deleteTranscriptRecordById(targetId, home)).toBe(true);
+  expect(findTranscriptRecordById(targetId, home)).toBeNull();
+  expect(searchReferencedTranscripts({ home, query: "keep me" })).toHaveLength(2);
+  expect(deleteTranscriptRecordById(targetId, home)).toBe(false);
+});
+
+test("scopes raw search to a project path when provided", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptA = join(home, "a.jsonl");
+  const transcriptB = join(home, "b.jsonl");
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    [
+      { eventId: "evt_a", agent: "antigravity", projectPath: "/proj/a", transcriptPath: transcriptA },
+      { eventId: "evt_b", agent: "antigravity", projectPath: "/proj/b", transcriptPath: transcriptB }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+  writeFileSync(transcriptA, JSON.stringify({ type: "USER_INPUT", content: "shared-term in project a" }), "utf8");
+  writeFileSync(transcriptB, JSON.stringify({ type: "USER_INPUT", content: "shared-term in project b" }), "utf8");
+
+  const events = searchRawEvents({ home, query: "", projectPath: "/proj/a" });
+  expect(events).toHaveLength(1);
+  expect(events[0]?.event["eventId"]).toBe("evt_a");
+
+  const transcripts = searchReferencedTranscripts({ home, query: "shared-term", projectPath: "/proj/a" });
+  expect(transcripts).toHaveLength(1);
+  expect(transcripts[0]?.transcriptPath).toBe(transcriptA);
+});
+
+test("lists all transcript records newest-first with pagination when query is empty", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "transcript_full.jsonl");
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_test", agent: "antigravity", transcriptPath })}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    transcriptPath,
+    [
+      { type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "first" },
+      { type: "USER_INPUT", created_at: "2026-08-01T00:00:01Z", content: "second" },
+      { type: "USER_INPUT", created_at: "2026-08-01T00:00:02Z", content: "third" }
+    ].map((event) => JSON.stringify(event)).join("\n"),
+    "utf8"
+  );
+
+  const page1 = searchReferencedTranscripts({ home, query: "", limit: 2, offset: 0 });
+  expect(page1.map((r) => r.event["content"])).toEqual(["third", "second"]);
+
+  const page2 = searchReferencedTranscripts({ home, query: "", limit: 2, offset: 2 });
+  expect(page2.map((r) => r.event["content"])).toEqual(["first"]);
+});
+
+test("lists all raw events newest-first with pagination when query is empty", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    [
+      { eventId: "evt_1", agent: "antigravity" },
+      { eventId: "evt_2", agent: "antigravity" },
+      { eventId: "evt_3", agent: "antigravity" }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+
+  const page1 = searchRawEvents({ home, query: "", limit: 2, offset: 0 });
+  expect(page1.map((r) => r.event["eventId"])).toEqual(["evt_3", "evt_2"]);
+
+  const page2 = searchRawEvents({ home, query: "", limit: 2, offset: 2 });
+  expect(page2.map((r) => r.event["eventId"])).toEqual(["evt_1"]);
+});
+
+test("updates a top-level content field in place by record id", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "transcript_full.jsonl");
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_test", agent: "antigravity", transcriptPath })}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    transcriptPath,
+    [
+      { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "keep me" },
+      { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:01Z", content: "old content" }
+    ].map((event) => JSON.stringify(event)).join("\n"),
+    "utf8"
+  );
+
+  const [target] = searchReferencedTranscripts({ home, query: "old content" });
+  const targetId = transcriptRecordId(target!);
+
+  const newId = updateTranscriptRecordContent(targetId, "new content", home);
+  expect(newId).not.toBeNull();
+  expect(newId).not.toBe(targetId);
+
+  // The old id is gone (content changed, so its hash changed); the new id resolves the edit.
+  expect(findTranscriptRecordById(targetId, home)).toBeNull();
+  const updated = findTranscriptRecordById(newId!, home);
+  expect(normalizeTranscriptRecord(updated!).content).toBe("new content");
+
+  // The other line is untouched.
+  const untouched = searchReferencedTranscripts({ home, query: "keep me" });
+  expect(untouched).toHaveLength(1);
+});
+
+test("updates a nested message.content text block in place by record id", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "claude-code", "session.jsonl");
+  mkdirSync(join(home, "claude-code"), { recursive: true });
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({ eventId: "evt_test", agent: "claude-code", transcriptPath })}\n`,
+    "utf8"
+  );
+  writeFileSync(
+    transcriptPath,
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "old nested content" }] },
+      timestamp: "2026-08-02T00:00:00Z"
+    }),
+    "utf8"
+  );
+
+  const [target] = searchReferencedTranscripts({ home, query: "old nested content" });
+  const targetId = transcriptRecordId(target!);
+
+  const newId = updateTranscriptRecordContent(targetId, "new nested content", home);
+  expect(newId).not.toBeNull();
+  const updated = findTranscriptRecordById(newId!, home);
+  expect(normalizeTranscriptRecord(updated!).content).toBe("new nested content");
+});
+
+test("returns null when updating an unknown record id", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  expect(updateTranscriptRecordContent("does-not-exist", "x", home)).toBeNull();
 });

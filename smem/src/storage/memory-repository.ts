@@ -299,6 +299,37 @@ export class MemoryRepository {
     return this.getById(id)!;
   }
 
+  restore(id: string): MemoryRecord {
+    const current = this.getById(id);
+    if (!current) {
+      throw new Error(`Memory not found: ${id}`);
+    }
+    if (current.status !== "archived") {
+      throw new Error(`Only archived memories can be restored: ${id}`);
+    }
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE memories
+         SET status = 'active', updated_at = ?
+         WHERE id = ? AND project_id = ? AND scope = ? AND status = 'archived'`
+      )
+      .run(now, id, this.projectIdForScope(), this.scope);
+    return this.getById(id)!;
+  }
+
+  remove(id: string): void {
+    const current = this.getById(id);
+    if (!current) {
+      throw new Error(`Memory not found: ${id}`);
+    }
+
+    this.db
+      .prepare(`DELETE FROM memories WHERE id = ? AND project_id = ? AND scope = ?`)
+      .run(id, this.projectIdForScope(), this.scope);
+  }
+
   importRecords(records: MemoryRecord[], onConflict: "skip" | "replace" = "skip"): { imported: number; skipped: number } {
     let imported = 0;
     let skipped = 0;

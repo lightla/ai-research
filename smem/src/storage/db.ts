@@ -6,6 +6,7 @@ export type SqliteDatabase = DatabaseSync;
 
 function migrationRoot(): string {
   const candidates = [
+    ...(process.env.SMEM_MIGRATIONS_DIR ? [process.env.SMEM_MIGRATIONS_DIR] : []),
     join(__dirname, "migrations"),
     join(process.cwd(), "dist", "storage", "migrations"),
     join(process.cwd(), "src", "storage", "migrations")

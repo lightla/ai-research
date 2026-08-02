@@ -17,6 +17,8 @@ Phase 1 supports:
 - `init`, `status`, `attach`, `move`, `del`, `list-projects`
 - `store`, `list`, `recall`, `context`
 - read-only Markdown render
+- `web`: launch a local webapp to browse, search, edit, archive, and delete memories
+  - `-d, --daemon`: run in the background and return the terminal; `--stop` / `--status` manage it
 
 `recall` supports multiple modes:
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
-import { closeSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { stdin as input, stdout as output } from "node:process";
 
 process.removeAllListeners("warning");
@@ -51,6 +52,7 @@ import {
   summarizeTranscriptRecord
 } from "../raw/raw-reader";
 import { printMemory, printProject } from "./format";
+import { stopWeb, webStatus, writeWebMetadata } from "../web/web-daemon";
 
 const program = new Command();
 
@@ -71,29 +73,40 @@ program
   .description("Install smem bootstrap instructions for an agent in the current project")
   .option("--agent <agent>", "Agent to install: codex, claude-code, antigravity, or all", "all")
   .option("--hooks", "Install native hook capture config")
+  .option("--global", "Install hooks at the user level (all projects) instead of the current directory only")
   .option("--dry-run", "Show target files without writing")
-  .action((options: { agent: string; hooks?: boolean; dryRun?: boolean }) => {
+  .action((options: { agent: string; hooks?: boolean; global?: boolean; dryRun?: boolean }) => {
     const agents = options.agent === "all" ? knownAgents() : [parseAgentName(options.agent)];
-    const results = installAgents({
-      agents,
-      cwd: process.cwd(),
-      dryRun: options.dryRun ?? false
-    });
 
-    for (const result of results) {
-      const action = options.dryRun ? "would update" : result.changed ? "updated" : "already installed";
-      console.log(`${result.agent}: ${action} ${result.filePath}`);
+    if (!options.global) {
+      const results = installAgents({
+        agents,
+        cwd: process.cwd(),
+        dryRun: options.dryRun ?? false
+      });
+
+      for (const result of results) {
+        const action = options.dryRun ? "would update" : result.changed ? "updated" : "already installed";
+        console.log(`${result.agent}: ${action} ${result.filePath}`);
+      }
     }
 
     if (options.hooks) {
       const hookResults = installAgentsHooks({
         agents,
         cwd: process.cwd(),
+        global: options.global ?? false,
         dryRun: options.dryRun ?? false
       });
       for (const result of hookResults) {
         const action = options.dryRun ? "would update" : result.changed ? "updated" : "already installed";
         console.log(`${result.agent} hooks: ${action} ${result.filePath}`);
+        if (options.global) {
+          const note = globalHookVerificationNote(result.agent);
+          if (note) {
+            console.log(`  ${note}`);
+          }
+        }
       }
     }
   });
@@ -103,24 +116,29 @@ program
   .description("Remove smem bootstrap instructions and optional hook config from the current project")
   .option("--agent <agent>", "Agent to uninstall: codex, claude-code, antigravity, or all", "all")
   .option("--hooks", "Remove native hook capture config")
+  .option("--global", "Remove the user-level hook install instead of the current directory only")
   .option("--dry-run", "Show target files without writing")
-  .action((options: { agent: string; hooks?: boolean; dryRun?: boolean }) => {
+  .action((options: { agent: string; hooks?: boolean; global?: boolean; dryRun?: boolean }) => {
     const agents = options.agent === "all" ? knownAgents() : [parseAgentName(options.agent)];
-    const results = uninstallAgents({
-      agents,
-      cwd: process.cwd(),
-      dryRun: options.dryRun ?? false
-    });
 
-    for (const result of results) {
-      const action = options.dryRun ? "would remove" : result.changed ? "removed" : "already uninstalled";
-      console.log(`${result.agent}: ${action} ${result.filePath}`);
+    if (!options.global) {
+      const results = uninstallAgents({
+        agents,
+        cwd: process.cwd(),
+        dryRun: options.dryRun ?? false
+      });
+
+      for (const result of results) {
+        const action = options.dryRun ? "would remove" : result.changed ? "removed" : "already uninstalled";
+        console.log(`${result.agent}: ${action} ${result.filePath}`);
+      }
     }
 
     if (options.hooks) {
       const hookResults = uninstallAgentsHooks({
         agents,
         cwd: process.cwd(),
+        global: options.global ?? false,
         dryRun: options.dryRun ?? false
       });
       for (const result of hookResults) {
@@ -538,7 +556,7 @@ const history = program
   .command("history")
   .description("Read conversation history from a raw transcript match onward")
   .argument("<query...>", "Raw search query")
-  .option("--after <n>", "Number of transcript records after the match", parseInteger, 10)
+  .option("--after <n>", "Number of meaningful (user/assistant) records after the match", parseInteger, 10)
   .option("--agent <agent>", "Filter by agent: codex, claude-code, or antigravity")
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--full", "Print full transcript JSON records")
@@ -763,6 +781,93 @@ program
     });
   });
 
+program
+  .command("web")
+  .description("Launch the local webapp to browse, search, edit, archive, and delete memories")
+  .option("--port <port>", "Port to run on", parseInteger, 4317)
+  .option("--rebuild", "Force a fresh production build even if one already exists")
+  .option("-d, --daemon", "Start in the background and return control of the terminal")
+  .option("--stop", "Stop a webapp started with --daemon")
+  .option("--status", "Show whether a daemonized webapp is running")
+  .action((options: { port: number; rebuild?: boolean; daemon?: boolean; stop?: boolean; status?: boolean }) => {
+    const home = defaultSmartMemoryHome();
+
+    if (options.stop) {
+      console.log(stopWeb(home) ? "Stop signal sent to smem web." : "smem web is not running.");
+      return;
+    }
+
+    if (options.status) {
+      const status = webStatus(home);
+      console.log(status ? JSON.stringify(status, null, 2) : "smem web is not running.");
+      return;
+    }
+
+    const running = webStatus(home);
+    if (running) {
+      console.log(`smem web is already running at http://localhost:${running.port} (pid ${running.pid}).`);
+      return;
+    }
+
+    const webappDir = join(__dirname, "..", "..", "webapp");
+    if (!existsSync(join(webappDir, "package.json"))) {
+      console.error(`smem: webapp not found at ${webappDir}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!existsSync(join(webappDir, "node_modules"))) {
+      console.error(`smem: webapp dependencies are not installed. Run \`pnpm install\` in ${webappDir} first.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const nextBin = join(webappDir, "node_modules", ".bin", "next");
+    if (!existsSync(nextBin)) {
+      console.error(`smem: next binary not found at ${nextBin}. Run \`pnpm install\` in ${webappDir} first.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    // Spawn the local `next` binary directly rather than through `npx`, which adds an extra
+    // wrapper/verification process — that extra hop is what a bare pid-based --stop can miss.
+    const runNext = (args: string[]): Promise<number> =>
+      new Promise((resolve) => {
+        const child = spawn(nextBin, args, { cwd: webappDir, stdio: "inherit", env: process.env });
+        child.on("exit", (code) => resolve(code ?? 0));
+      });
+
+    (async () => {
+      const hasBuild = existsSync(join(webappDir, ".next", "BUILD_ID"));
+      if (!hasBuild || options.rebuild) {
+        console.log(`Building production bundle in ${webappDir}...`);
+        const buildCode = await runNext(["build"]);
+        if (buildCode !== 0) {
+          process.exitCode = buildCode;
+          return;
+        }
+      }
+
+      if (options.daemon) {
+        const logPath = join(home, "web.log");
+        const logFd = openSync(logPath, "a");
+        const child = spawn(nextBin, ["start", "-p", String(options.port)], {
+          cwd: webappDir,
+          stdio: ["ignore", logFd, logFd],
+          env: process.env,
+          detached: true
+        });
+        closeSync(logFd);
+        child.unref();
+        writeWebMetadata(home, { pid: child.pid!, port: options.port, startedAt: new Date().toISOString() });
+        console.log(`smem web running in the background at http://localhost:${options.port} (pid ${child.pid}).`);
+        console.log(`Logs: ${logPath}. Stop with \`smem web --stop\`.`);
+        return;
+      }
+
+      process.exitCode = await runNext(["start", "-p", String(options.port)]);
+    })();
+  });
+
 program.parseAsync(process.argv).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`smem: ${message}`);
@@ -836,6 +941,13 @@ async function promptProjectIdConfirmation(projectId: string): Promise<string> {
   } finally {
     rl.close();
   }
+}
+
+function globalHookVerificationNote(agent: string): string | null {
+  if (agent === "antigravity" || agent === "codex") {
+    return `Note: ${agent}'s global hook config location is inferred, not verified — chat once and check \`smem raw\`/\`smem history\` to confirm it fires.`;
+  }
+  return null;
 }
 
 function parseScope(value: string): "local" | "global" {

@@ -217,3 +217,45 @@ test("edits, archives, and imports memories while preserving ids", () => {
   expect(result.skipped).toBe(1);
   memories.close();
 });
+
+test("restores archived memories back to active", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-test-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
+  tempDirs.push(home, projectDir);
+
+  const registry = new RegistryRepository(home);
+  const project = registry.initProject({ cwd: projectDir, name: "demo" });
+  registry.close();
+
+  const memories = new MemoryRepository(project, { home });
+  const created = memories.create({ type: "note", content: "keep me around", tags: [], status: "active" });
+  memories.archive(created.id);
+  expect(memories.recall("keep me around")).toHaveLength(0);
+
+  const restored = memories.restore(created.id);
+  expect(restored.status).toBe("active");
+  expect(memories.recall("keep me around")).toHaveLength(1);
+
+  expect(() => memories.restore(created.id)).toThrow(/Only archived memories can be restored/);
+  memories.close();
+});
+
+test("removes memories permanently", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-test-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
+  tempDirs.push(home, projectDir);
+
+  const registry = new RegistryRepository(home);
+  const project = registry.initProject({ cwd: projectDir, name: "demo" });
+  registry.close();
+
+  const memories = new MemoryRepository(project, { home });
+  const created = memories.create({ type: "note", content: "delete me for good", tags: [], status: "active" });
+
+  memories.remove(created.id);
+  expect(memories.getById(created.id)).toBeNull();
+  expect(memories.recall("delete me for good")).toHaveLength(0);
+
+  expect(() => memories.remove(created.id)).toThrow(/Memory not found/);
+  memories.close();
+});
