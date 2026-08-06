@@ -22,7 +22,7 @@ export type DaemonMetadata = {
   lastResult?: ProcessResult;
 };
 
-export function processOnce(options: { cwd: string; scope: "local" | "global"; home?: string }): ProcessResult {
+export async function processOnce(options: { cwd: string; scope: "local" | "global"; home?: string }): Promise<ProcessResult> {
   const home = options.home ?? defaultSmartMemoryHome();
   const registry = new RegistryRepository(home);
   try {
@@ -60,7 +60,7 @@ export async function runDaemon(options: DaemonOptions): Promise<void> {
 
   try {
     while (!stopping) {
-      const result = processOnce({ cwd: options.cwd, scope: options.scope, home });
+      const result = await processOnce({ cwd: options.cwd, scope: options.scope, home });
       metadata.lastCycleAt = new Date().toISOString();
       metadata.lastResult = result;
       writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");

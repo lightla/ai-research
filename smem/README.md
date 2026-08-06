@@ -12,7 +12,7 @@ Phase 1 supports:
 - SQLite memory store
 - local and global memory scopes
 - `guide`, `install`
-- offline `classify`
+- offline `classify` with an optional pluggable LLM classifier (`smem config set classifier ollama|openai`)
 - `process`, `candidates`, `promote`, `reject`
 - `init`, `status`, `attach`, `move`, `del`, `list-projects`
 - `store`, `list`, `recall`, `context`
@@ -45,12 +45,14 @@ Run the CLI from source:
 ```bash
 pnpm exec tsx src/cli/index.ts init
 pnpm exec tsx src/cli/index.ts guide
-pnpm exec tsx src/cli/index.ts install --agent codex --hooks
+pnpm exec tsx src/cli/index.ts install --agent codex --listen
 pnpm exec tsx src/cli/index.ts list-projects
 pnpm exec tsx src/cli/index.ts move --project-id proj_...
 pnpm exec tsx src/cli/index.ts move --from-path /old/project/path
 pnpm exec tsx src/cli/index.ts del --project-id proj_accidental
 pnpm exec tsx src/cli/index.ts classify "chốt dùng SQLite cho database storage"
+pnpm exec tsx src/cli/index.ts config set classifier ollama
+pnpm exec tsx src/cli/index.ts config set model gemma4:31b-cloud
 pnpm exec tsx src/cli/index.ts process
 pnpm exec tsx src/cli/index.ts candidates
 pnpm exec tsx src/cli/index.ts store --type decision --title "Outsider store" --tags storage,mvp "Default storage does not write files into company repos."

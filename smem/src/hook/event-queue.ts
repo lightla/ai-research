@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { classifyText, type OfflineClassification } from "../classify/offline-classifier";
+import { classifyText, type ClassifierKind, type OfflineClassification } from "../classify/offline-classifier";
+import type { LlmClassification } from "../classify/llm-classifier";
 import { createEventId } from "../core/ids";
 import { defaultSmartMemoryHome } from "../core/paths";
 import type { AgentName } from "../install/agent-installer";
@@ -23,11 +24,11 @@ export type NormalizedHookEvent = {
     agent: AgentName;
   };
   classifier: {
-    kind: "smem-rule" | "wink-nlp";
+    kind: ClassifierKind;
     version: string;
     confidence: number;
   };
-  classification: OfflineClassification;
+  classification: OfflineClassification | LlmClassification;
   payload: HookEventInput;
 };
 

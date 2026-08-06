@@ -13,7 +13,7 @@ afterEach(() => {
   }
 });
 
-test("daemon once processes an empty project and status is recoverable", () => {
+test("daemon once processes an empty project and status is recoverable", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-daemon-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-daemon-project-"));
   tempDirs.push(home, projectDir);
@@ -21,7 +21,7 @@ test("daemon once processes an empty project and status is recoverable", () => {
   registry.initProject({ cwd: projectDir, name: "daemon-test" });
   registry.close();
 
-  expect(processOnce({ cwd: projectDir, scope: "local", home })).toEqual({
+  expect(await processOnce({ cwd: projectDir, scope: "local", home })).toEqual({
     scanned: 0,
     created: 0,
     skipped: 0,

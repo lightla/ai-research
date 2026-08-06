@@ -7,6 +7,8 @@ const its = require("wink-nlp/src/its.js") as any;
 
 const nlp = winkNLP(model);
 
+export type ClassifierKind = "smem-rule" | "wink-nlp" | "llm";
+
 export type OfflineLabel =
   | "decision"
   | "todo"
@@ -132,7 +134,7 @@ export function classifyText(text: string): OfflineClassification {
     topics,
     keywords,
     entities,
-    languageHint: languageHint(normalized),
+    languageHint: detectLanguageHint(normalized),
     classifier: {
       kind: "wink-nlp",
       version: VERSION,
@@ -179,7 +181,7 @@ function extractTopics(keywords: string[], entities: string[]): string[] {
   }).slice(0, 8);
 }
 
-function languageHint(text: string): OfflineClassification["languageHint"] {
+export function detectLanguageHint(text: string): OfflineClassification["languageHint"] {
   if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(text)) {
     return "mixed";
   }

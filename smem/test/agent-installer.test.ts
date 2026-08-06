@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import {
   installAgent,
   installAgentHooks,
+  knownAgents,
   uninstallAgent,
   uninstallAgentHooks
 } from "../src/install/agent-installer";
+import { opencodePluginPath } from "../src/install/opencode-installer";
 
 const tempDirs: string[] = [];
 
@@ -149,4 +151,90 @@ test("global install preserves other tools' entries in the shared global config"
   const after = JSON.parse(readFileSync(globalPath, "utf8"));
   expect(after.hooks.PreToolUse[0].hooks[0].command).toBe("rtk hook claude");
   expect(after.hooks.UserPromptSubmit).toBeDefined();
+});
+
+test("opencode is a known agent and bootstraps into AGENTS.md", () => {
+  expect(knownAgents()).toContain("opencode");
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-installer-"));
+  tempDirs.push(projectDir);
+
+  installAgent({ agent: "opencode", cwd: projectDir });
+
+  const agentsPath = join(projectDir, "AGENTS.md");
+  expect(readFileSync(agentsPath, "utf8")).toContain("<!-- smem:start -->");
+
+  const result = uninstallAgent({ agent: "opencode", cwd: projectDir });
+  expect(result.changed).toBe(true);
+  expect(readFileSync(agentsPath, "utf8")).not.toContain("<!-- smem:start -->");
+});
+
+test("installs opencode hooks as a plugin file instead of a JSON hook config", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-installer-"));
+  tempDirs.push(projectDir);
+
+  const result = installAgentHooks({ agent: "opencode", cwd: projectDir });
+  const pluginPath = join(projectDir, ".opencode", "plugin", "smem.ts");
+
+  expect(result.changed).toBe(true);
+  expect(result.filePath).toBe(pluginPath);
+  expect(result.kind).toBe("hooks");
+  expect(existsSync(pluginPath)).toBe(true);
+  const content = readFileSync(pluginPath, "utf8");
+  expect(content).toContain("smem hook run --agent opencode");
+  expect(content).toContain('"chat.message"');
+  expect(content).toContain('"tool.execute.after"');
+  expect(content).toContain("dispose");
+});
+
+test("installing opencode hooks twice is idempotent", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-installer-"));
+  tempDirs.push(projectDir);
+
+  const first = installAgentHooks({ agent: "opencode", cwd: projectDir });
+  const second = installAgentHooks({ agent: "opencode", cwd: projectDir });
+
+  expect(first.changed).toBe(true);
+  expect(second.changed).toBe(false);
+  expect(readFileSync(join(projectDir, ".opencode", "plugin", "smem.ts"), "utf8")).toContain("smem hook run --agent opencode");
+});
+
+test("uninstalling opencode hooks removes the smem plugin file", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-installer-"));
+  tempDirs.push(projectDir);
+  installAgentHooks({ agent: "opencode", cwd: projectDir });
+
+  const pluginPath = join(projectDir, ".opencode", "plugin", "smem.ts");
+  const result = uninstallAgentHooks({ agent: "opencode", cwd: projectDir });
+
+  expect(result.changed).toBe(true);
+  expect(existsSync(pluginPath)).toBe(false);
+});
+
+test("uninstalling opencode hooks leaves a user-owned plugin untouched", () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "smem-installer-"));
+  tempDirs.push(projectDir);
+  const pluginPath = join(projectDir, ".opencode", "plugin", "smem.ts");
+  mkdirSync(dirname(pluginPath), { recursive: true });
+  writeFileSync(pluginPath, "export default async () => ({})", "utf8");
+
+  const result = uninstallAgentHooks({ agent: "opencode", cwd: projectDir });
+
+  expect(result.changed).toBe(false);
+  expect(readFileSync(pluginPath, "utf8")).toBe("export default async () => ({})");
+});
+
+test("opencode global hooks install to ~/.config/opencode/plugin/smem.ts", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-installer-home-"));
+  tempDirs.push(home);
+
+  const result = installAgentHooks({ agent: "opencode", cwd: "/should/not/be/used", global: true, home });
+  const globalPath = join(home, ".config", "opencode", "plugin", "smem.ts");
+
+  expect(result.filePath).toBe(globalPath);
+  expect(result.filePath).toBe(opencodePluginPath({ cwd: "/unused", global: true, home }));
+  expect(existsSync(globalPath)).toBe(true);
+
+  const uninstallResult = uninstallAgentHooks({ agent: "opencode", cwd: "/should/not/be/used", global: true, home });
+  expect(uninstallResult.changed).toBe(true);
+  expect(existsSync(globalPath)).toBe(false);
 });

@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { installOpencodeHooks, uninstallOpencodeHooks } from "./opencode-installer";
 
-export type AgentName = "codex" | "claude-code" | "antigravity";
+export type AgentName = "codex" | "claude-code" | "antigravity" | "opencode";
 
 export type InstallResult = {
   agent: AgentName;
@@ -23,6 +24,10 @@ const AGENTS: Record<AgentName, { fileName: string; displayName: string }> = {
   antigravity: {
     fileName: "AGENTS.md",
     displayName: "Antigravity"
+  },
+  opencode: {
+    fileName: "AGENTS.md",
+    displayName: "OpenCode"
   }
 };
 
@@ -57,6 +62,14 @@ export function installAgentHooks(options: {
   home?: string;
   dryRun?: boolean;
 }): InstallResult {
+  if (options.agent === "opencode") {
+    return installOpencodeHooks({
+      cwd: resolve(options.cwd),
+      ...(options.global !== undefined ? { global: options.global } : {}),
+      ...(options.home ? { home: options.home } : {}),
+      dryRun: options.dryRun ?? false
+    });
+  }
   const filePath = options.global
     ? globalHookFilePath(options.agent, options.home)
     : hookFilePath(options.agent, resolve(options.cwd));
@@ -108,6 +121,14 @@ export function uninstallAgentHooks(options: {
   home?: string;
   dryRun?: boolean;
 }): InstallResult {
+  if (options.agent === "opencode") {
+    return uninstallOpencodeHooks({
+      cwd: resolve(options.cwd),
+      ...(options.global !== undefined ? { global: options.global } : {}),
+      ...(options.home ? { home: options.home } : {}),
+      dryRun: options.dryRun ?? false
+    });
+  }
   const filePath = options.global
     ? globalHookFilePath(options.agent, options.home)
     : hookFilePath(options.agent, resolve(options.cwd));
@@ -173,15 +194,15 @@ export function uninstallAgentsHooks(options: { agents: AgentName[]; cwd: string
 }
 
 export function parseAgentName(value: string): AgentName {
-  if (value === "codex" || value === "claude-code" || value === "antigravity") {
+  if (value === "codex" || value === "claude-code" || value === "antigravity" || value === "opencode") {
     return value;
   }
 
-  throw new Error(`Invalid agent: ${value}. Expected codex, claude-code, or antigravity.`);
+  throw new Error(`Invalid agent: ${value}. Expected codex, claude-code, antigravity, or opencode.`);
 }
 
 export function knownAgents(): AgentName[] {
-  return ["codex", "claude-code", "antigravity"];
+  return ["codex", "claude-code", "antigravity", "opencode"];
 }
 
 function upsertBlock(existing: string, block: string): string {
@@ -312,6 +333,8 @@ function hookFilePath(agent: AgentName, cwd: string): string {
       return join(cwd, ".claude", "settings.json");
     case "antigravity":
       return join(cwd, ".agents", "hooks.json");
+    case "opencode":
+      throw new Error("opencode hooks are installed as an opencode plugin; there is no JSON hook file.");
   }
 }
 
@@ -319,6 +342,8 @@ function hookFilePath(agent: AgentName, cwd: string): string {
 // install. Claude Code is confirmed to read hooks from `~/.claude/settings.json`. Codex and
 // Antigravity's global config locations are inferred by analogy with their per-project layout and
 // are not independently verified — test by chatting once after install and checking `smem raw`.
+// opencode is handled separately: it has no JSON hook file, so `installOpencodeHooks` targets
+// `~/.config/opencode/plugin/smem.ts` instead of reaching this function.
 function globalHookFilePath(agent: AgentName, home?: string): string {
   return hookFilePath(agent, home ?? homedir());
 }
@@ -355,6 +380,8 @@ function hookConfig(agent: AgentName): Record<string, unknown> {
           ]
         }
       };
+    case "opencode":
+      throw new Error("opencode hooks are installed as an opencode plugin; there is no JSON hook config.");
   }
 }
 

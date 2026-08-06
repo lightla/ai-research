@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
-import { classifyText } from "../classify/offline-classifier";
+import { classifyText, type ClassifierKind } from "../classify/offline-classifier";
+import { classifyWithLlm } from "../classify/llm-classifier";
+import { resolveLlmClassifierConfig } from "../core/config";
 import { base58FromBytes } from "../core/ids";
 import { defaultSmartMemoryHome } from "../core/paths";
 import type { MemoryInput, MemoryType, ProjectRecord } from "../core/schema";
@@ -19,12 +21,12 @@ export type ProcessResult = {
 
 export type ProcessSkipReason = "no-text" | "low-confidence" | "wrong-project" | "unsupported-label" | "duplicate";
 
-export function processCandidates(options: {
+export async function processCandidates(options: {
   project: ProjectRecord;
   scope: "local" | "global";
   home?: string;
   limit?: number;
-}): ProcessResult {
+}): Promise<ProcessResult> {
   const home = options.home ?? defaultSmartMemoryHome();
   const queuePath = join(home, "events", "pending.jsonl");
   if (!existsSync(queuePath)) {
@@ -32,6 +34,7 @@ export function processCandidates(options: {
   }
 
   const events = readEvents(queuePath).slice(-(options.limit ?? 200));
+  await enrichWithLlm(events, home);
   const repo = new MemoryRepository(options.project, { scope: options.scope, home });
   let scanned = 0;
   let created = 0;
@@ -87,6 +90,48 @@ function readEvents(path: string): NormalizedHookEvent[] {
         return [];
       }
     });
+}
+
+async function enrichWithLlm(events: NormalizedHookEvent[], home: string): Promise<void> {
+  let config;
+  try {
+    config = resolveLlmClassifierConfig({ home });
+  } catch (error) {
+    console.error(`smem: ${(error as Error).message} Falling back to the local classifier.`);
+    return;
+  }
+  if (!config) {
+    return;
+  }
+
+  const targets = events.filter((event) => Boolean(textForCandidate(event)));
+  await mapLimit(targets, 4, async (event) => {
+    const text = textForCandidate(event) as string;
+    try {
+      const llm = await classifyWithLlm(text, config);
+      event.classification = llm;
+      event.classifier = {
+        kind: "llm",
+        version: llm.classifier.version,
+        confidence: llm.classifier.confidence
+      };
+    } catch (error) {
+      console.error(`smem: LLM classification failed, using local classifier: ${(error as Error).message}`);
+    }
+  });
+}
+
+async function mapLimit<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let index = 0;
+  const runNext = async (): Promise<void> => {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      await worker(items[current] as T);
+    }
+  };
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, () => runNext());
+  await Promise.all(runners);
 }
 
 function candidateDecision(event: NormalizedHookEvent, project: ProjectRecord): { ok: true } | { ok: false; reason: ProcessSkipReason } {
@@ -196,11 +241,15 @@ function classifierField(value: unknown): NormalizedHookEvent["classifier"] | un
   const kind = record["kind"];
   const version = record["version"];
   const confidence = record["confidence"];
-  if ((kind !== "smem-rule" && kind !== "wink-nlp") || typeof version !== "string" || typeof confidence !== "number") {
+  if (
+    (kind !== "smem-rule" && kind !== "wink-nlp" && kind !== "llm") ||
+    typeof version !== "string" ||
+    typeof confidence !== "number"
+  ) {
     return undefined;
   }
 
-  return { kind, version, confidence };
+  return { kind: kind as ClassifierKind, version, confidence };
 }
 
 function isClassification(value: unknown): value is NormalizedHookEvent["classification"] {

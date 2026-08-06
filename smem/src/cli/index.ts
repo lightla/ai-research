@@ -30,6 +30,18 @@ import {
 } from "../install/agent-installer";
 import { runHook } from "../hook/hook-runner";
 import { classifyText } from "../classify/offline-classifier";
+import { classifyWithLlm } from "../classify/llm-classifier";
+import {
+  DEFAULT_CONFIG,
+  coerceConfigValue,
+  loadConfig,
+  parseConfigKey,
+  resolveLlmClassifierConfig,
+  saveConfig,
+  setConfigValue,
+  unsetConfigValue,
+  type ClassifierConfig
+} from "../core/config";
 import { createEmbeddingClient, type EmbeddingProvider } from "../embedding/embedding-client";
 import { EmbeddingRepository, type SemanticResult } from "../storage/embedding-repository";
 import type { MemoryRecord } from "../core/schema";
@@ -71,12 +83,17 @@ program
 program
   .command("install")
   .description("Install smem bootstrap instructions for an agent in the current project")
-  .option("--agent <agent>", "Agent to install: codex, claude-code, antigravity, or all", "all")
-  .option("--hooks", "Install native hook capture config")
+  .option("--agent <agent>", "Agent to install: codex, claude-code, antigravity, opencode, or all", "all")
+  .option("--listen", "Install native capture for the selected agents (hooks for codex/claude-code/antigravity, an opencode plugin for opencode)")
+  .option("--hooks", "Alias for --listen on codex, claude-code, and antigravity")
+  .option("--plugins", "Alias for --listen on opencode only")
   .option("--global", "Install hooks at the user level (all projects) instead of the current directory only")
   .option("--dry-run", "Show target files without writing")
-  .action((options: { agent: string; hooks?: boolean; global?: boolean; dryRun?: boolean }) => {
+  .action((options: { agent: string; listen?: boolean; hooks?: boolean; plugins?: boolean; global?: boolean; dryRun?: boolean }) => {
     const agents = options.agent === "all" ? knownAgents() : [parseAgentName(options.agent)];
+    if (options.plugins && agents.some((agent) => agent !== "opencode")) {
+      throw new Error("--plugins applies to opencode only; use --hooks for codex, claude-code, or antigravity.");
+    }
 
     if (!options.global) {
       const results = installAgents({
@@ -91,7 +108,7 @@ program
       }
     }
 
-    if (options.hooks) {
+    if (options.listen || options.hooks || options.plugins) {
       const hookResults = installAgentsHooks({
         agents,
         cwd: process.cwd(),
@@ -100,7 +117,8 @@ program
       });
       for (const result of hookResults) {
         const action = options.dryRun ? "would update" : result.changed ? "updated" : "already installed";
-        console.log(`${result.agent} hooks: ${action} ${result.filePath}`);
+        const kind = result.agent === "opencode" ? "plugin" : "hooks";
+        console.log(`${result.agent} ${kind}: ${action} ${result.filePath}`);
         if (options.global) {
           const note = globalHookVerificationNote(result.agent);
           if (note) {
@@ -114,12 +132,17 @@ program
 program
   .command("uninstall")
   .description("Remove smem bootstrap instructions and optional hook config from the current project")
-  .option("--agent <agent>", "Agent to uninstall: codex, claude-code, antigravity, or all", "all")
-  .option("--hooks", "Remove native hook capture config")
+  .option("--agent <agent>", "Agent to uninstall: codex, claude-code, antigravity, opencode, or all", "all")
+  .option("--listen", "Remove native capture for the selected agents (hooks for codex/claude-code/antigravity, an opencode plugin for opencode)")
+  .option("--hooks", "Alias for --listen on codex, claude-code, and antigravity")
+  .option("--plugins", "Alias for --listen on opencode only")
   .option("--global", "Remove the user-level hook install instead of the current directory only")
   .option("--dry-run", "Show target files without writing")
-  .action((options: { agent: string; hooks?: boolean; global?: boolean; dryRun?: boolean }) => {
+  .action((options: { agent: string; listen?: boolean; hooks?: boolean; plugins?: boolean; global?: boolean; dryRun?: boolean }) => {
     const agents = options.agent === "all" ? knownAgents() : [parseAgentName(options.agent)];
+    if (options.plugins && agents.some((agent) => agent !== "opencode")) {
+      throw new Error("--plugins applies to opencode only; use --hooks for codex, claude-code, or antigravity.");
+    }
 
     if (!options.global) {
       const results = uninstallAgents({
@@ -134,7 +157,7 @@ program
       }
     }
 
-    if (options.hooks) {
+    if (options.listen || options.hooks || options.plugins) {
       const hookResults = uninstallAgentsHooks({
         agents,
         cwd: process.cwd(),
@@ -143,7 +166,8 @@ program
       });
       for (const result of hookResults) {
         const action = options.dryRun ? "would remove" : result.changed ? "removed" : "already uninstalled";
-        console.log(`${result.agent} hooks: ${action} ${result.filePath}`);
+        const kind = result.agent === "opencode" ? "plugin" : "hooks";
+        console.log(`${result.agent} ${kind}: ${action} ${result.filePath}`);
       }
     }
   });
@@ -164,11 +188,112 @@ hook
 
 program
   .command("classify")
-  .description("Classify text offline with the default local classifier")
+  .description("Classify text with the local classifier or an optional LLM provider")
   .argument("<text...>", "Text to classify")
-  .action((textParts: string[]) => {
-    console.log(JSON.stringify(classifyText(textParts.join(" ")), null, 2));
+  .option("--provider <provider>", "Classifier: offline (default) or llm", "offline")
+  .action(async (textParts: string[], options: { provider: string }) => {
+    const text = textParts.join(" ");
+    if (options.provider === "llm") {
+      let config;
+      try {
+        config = resolveLlmClassifierConfig();
+      } catch (error) {
+        console.error((error as Error).message);
+        process.exitCode = 1;
+        return;
+      }
+      if (!config) {
+        console.error(
+          "LLM classifier is not configured. Configure it with: smem config set classifier ollama|openai"
+        );
+        process.exitCode = 1;
+        return;
+      }
+      console.log(JSON.stringify(await classifyWithLlm(text, config), null, 2));
+      return;
+    }
+    console.log(JSON.stringify(classifyText(text), null, 2));
   });
+
+const configCmd = program
+  .command("config")
+  .description("Show the smem CLI configuration (classifier, LLM model, ...)")
+  .action(() => {
+    console.log(JSON.stringify(loadConfig(), null, 2));
+  });
+
+configCmd
+  .command("get")
+  .description("Show the full configuration or one key")
+  .argument("[key]", "Key: classifier, model, base-url, api-key, timeout-ms")
+  .action((key?: string) => {
+    const config = loadConfig();
+    if (!key) {
+      console.log(JSON.stringify(config, null, 2));
+      return;
+    }
+    const field = parseConfigKey(key);
+    if (!field) {
+      throw new Error(unknownConfigKeyMessage(key));
+    }
+    const value = config.classifier[field];
+    console.log(value === undefined ? "(not set)" : String(value));
+  });
+
+configCmd
+  .command("set")
+  .description("Set a configuration value")
+  .argument("<key>", "Key: classifier, model, base-url, api-key, timeout-ms")
+  .argument("<value>", "Value")
+  .action((key: string, value: string) => {
+    const field = setConfigValue(key, value);
+    const shown = loadConfig().classifier[field];
+    console.log(`smem: ${field} = ${shown === undefined ? "(not set)" : String(shown)}`);
+    printClassifierHint(loadConfig().classifier);
+  });
+
+configCmd
+  .command("unset")
+  .description("Remove a configuration value")
+  .argument("<key>", "Key: classifier, model, base-url, api-key, timeout-ms")
+  .action((key: string) => {
+    const field = unsetConfigValue(key);
+    const shown = loadConfig().classifier[field];
+    console.log(`smem: ${field} = ${shown === undefined ? "(not set)" : String(shown)}`);
+    printClassifierHint(loadConfig().classifier);
+  });
+
+configCmd
+  .command("reset")
+  .description("Reset the configuration to defaults (offline classifier)")
+  .action(() => {
+    saveConfig(DEFAULT_CONFIG);
+    console.log("smem: configuration reset to defaults (offline classifier).");
+  });
+
+function printClassifierHint(config: ClassifierConfig): void {
+  if (config.provider === "offline") {
+    if (config.model) {
+      console.error(
+        "Hint: LLM classification is off. Enable it with: smem config set classifier ollama (or openai)"
+      );
+    }
+    return;
+  }
+  if (!config.model) {
+    console.error("Hint: set the LLM model with: smem config set model <name>");
+    return;
+  }
+  if (config.provider === "openai" && !config.apiKey) {
+    console.error("Hint: set the API key with: smem config set api-key <key>");
+    return;
+  }
+  console.error(`Hint: LLM classification is enabled with ${config.provider}/${config.model}.`);
+}
+
+function unknownConfigKeyMessage(key: string): string {
+  return `Unknown config key "${key}". Known keys: classifier, model, base-url, api-key, timeout-ms.`;
+}
 
 program
   .command("init")
@@ -483,7 +608,7 @@ const raw = program
   .description("Search raw hook captures before they become candidates or memories")
   .argument("<query...>", "Raw search query")
   .option("--limit <n>", "Raw event limit", parseInteger, 20)
-  .option("--agent <agent>", "Filter by agent: codex, claude-code, or antigravity")
+  .option("--agent <agent>", "Filter by agent: codex, claude-code, antigravity, or opencode")
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--json", "Print raw JSON lines")
   .option("--full", "Print full formatted raw event JSON")
@@ -557,7 +682,7 @@ const history = program
   .description("Read conversation history from a raw transcript match onward")
   .argument("<query...>", "Raw search query")
   .option("--after <n>", "Number of meaningful (user/assistant) records after the match", parseInteger, 10)
-  .option("--agent <agent>", "Filter by agent: codex, claude-code, or antigravity")
+  .option("--agent <agent>", "Filter by agent: codex, claude-code, antigravity, or opencode")
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--full", "Print full transcript JSON records")
   .option("--verbose", "Include thinking, tool-only, and command-result records")
@@ -628,7 +753,7 @@ program
   .option("--scope <scope>", "Memory scope: local or global", "local")
   .option("--limit <n>", "Raw event scan limit", parseInteger, 200)
   .option("--background", "Run as a hook-triggered background worker")
-  .action((options: { scope: string; limit: number; background?: boolean }) => {
+  .action(async (options: { scope: string; limit: number; background?: boolean }) => {
     const release = options.background ? acquireProcessLock() : undefined;
     if (options.background && !release) {
       return;
@@ -636,8 +761,8 @@ program
 
     const scope = parseScope(options.scope);
     try {
-      withCurrentProject((project) => {
-        const result = processCandidates({
+      await withCurrentProject(async (project) => {
+        const result = await processCandidates({
           project,
           scope,
           limit: options.limit
@@ -657,8 +782,8 @@ daemon
   .command("once")
   .description("Process one raw capture batch and exit")
   .option("--scope <scope>", "Memory scope: local or global", "local")
-  .action((options: { scope: string }) => {
-    const result = processOnce({ cwd: process.cwd(), scope: parseScope(options.scope) });
+  .action(async (options: { scope: string }) => {
+    const result = await processOnce({ cwd: process.cwd(), scope: parseScope(options.scope) });
     console.log(formatProcessResult(result));
   });
 
@@ -946,6 +1071,9 @@ async function promptProjectIdConfirmation(projectId: string): Promise<string> {
 function globalHookVerificationNote(agent: string): string | null {
   if (agent === "antigravity" || agent === "codex") {
     return `Note: ${agent}'s global hook config location is inferred, not verified — chat once and check \`smem raw\`/\`smem history\` to confirm it fires.`;
+  }
+  if (agent === "opencode") {
+    return "Note: opencode global hooks are installed as a plugin at ~/.config/opencode/plugin/smem.ts — restart opencode once, then check `smem raw` to confirm it fires.";
   }
   return null;
 }

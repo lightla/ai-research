@@ -26,6 +26,7 @@ Install smem bootstrap instructions for agents:
 smem install --agent codex
 smem install --agent claude-code
 smem install --agent antigravity
+smem install --agent opencode
 smem install --agent all
 ```
 
@@ -57,26 +58,34 @@ smem move --project-id proj_original
 
 `smem del` prints the project details and requires you to type the same project id again. It deletes both the registry mapping and that project's memory store directory.
 
-Install native hook capture:
+Install native capture:
 
 ```bash
-smem install --agent codex --hooks
-smem install --agent claude-code --hooks
-smem install --agent antigravity --hooks
+smem install --agent codex --listen
+smem install --agent claude-code --listen
+smem install --agent antigravity --listen
+smem install --agent opencode --listen
+smem install --agent all --listen
 ```
 
-Hooks capture agent events into `~/.smart-memory/events/pending.jsonl`. This capture is local I/O and does not call an LLM. Captured events are classified by offline NLP/rules, then can be processed into review candidates.
+`--listen` installs the native capture mechanism for the selected agents: JSON hook config for
+codex/claude-code/antigravity, and an opencode plugin (`.opencode/plugin/smem.ts`, or
+`~/.config/opencode/plugin/smem.ts` with `--global`) for opencode. Restart the agent once after
+installing.
 
-Remove smem bootstrap/hook config from a project:
+Native capture writes agent events into `~/.smart-memory/events/pending.jsonl`. This capture is local I/O and does not call an LLM. Captured events are classified by offline NLP/rules, then can be processed into review candidates.
+
+Remove smem bootstrap/capture config from a project:
 
 ```bash
-smem uninstall --agent codex --hooks
-smem uninstall --agent claude-code --hooks
-smem uninstall --agent antigravity --hooks
-smem uninstall --agent all --hooks
+smem uninstall --agent codex --listen
+smem uninstall --agent claude-code --listen
+smem uninstall --agent antigravity --listen
+smem uninstall --agent opencode --listen
+smem uninstall --agent all --listen
 ```
 
-Uninstall only removes project instruction blocks and hook config. It does not delete memories under `~/.smart-memory`.
+Uninstall only removes project instruction blocks and capture config. It does not delete memories under `~/.smart-memory`.
 
 ## Memory Layers
 
@@ -123,6 +132,34 @@ Classify text offline without LLM tokens:
 smem classify "chốt dùng SQLite cho database storage"
 ```
 
+The default classifier is fully offline (`wink-nlp` + regex labels, 0 tokens). You can optionally plug in a free local LLM (or any OpenAI-compatible endpoint) to get higher-quality labels/topics/keywords. Everything is configured through the CLI:
+
+```bash
+smem config set classifier ollama
+smem config set model gemma4:31b-cloud
+smem classify "chốt dùng SQLite cho storage" --provider llm
+smem process
+```
+
+The CLI gives smart hints (e.g. reminds you to set the model or API key) and stays **off by default**: LLM classification only runs after you enable it via `smem config`. `smem process` uses the LLM automatically when configured, and falls back to the local classifier on any error or timeout. The config lives in `~/.smart-memory/config.json`:
+
+```bash
+smem config                 # show the current configuration
+smem config get model       # show one key
+smem config set <key> <value>    # classifier, model, base-url, api-key, timeout-ms
+smem config unset <key>          # remove a key
+smem config reset                # back to defaults (offline)
+```
+
+The LLM never runs in the sync hook path (hooks must return immediately). It runs in the detached background worker/daemon and in `smem process`, so the user never waits on it. Any OpenAI-compatible endpoint works — point `base-url` at Ollama (`http://localhost:11434/v1`, the default), Groq, OpenRouter, or a custom server:
+
+```bash
+smem config set classifier openai
+smem config set model gpt-4o-mini
+smem config set api-key sk-...
+smem config set base-url https://api.example.com/v1
+```
+
 Process raw captured events into candidate memories:
 
 ```bash
@@ -136,7 +173,7 @@ smem reject <candidate-id>
 
 Candidates are shortcuts for review. They are `pending-review` and do not appear in normal `smem context`/`smem recall` until promoted.
 
-`smem process` can be run manually and exits after one batch. For `raw-input` and `raw-output`, native hooks also trigger one short-lived detached worker after the raw append. The hook still returns immediately; the worker runs offline classification/candidate processing and never calls an LLM, promotes memory, or deletes raw data. This is not a persistent daemon: a lock prevents overlapping workers, and a future daemon remains deferred until filtering and review rules are stable.
+`smem process` can be run manually and exits after one batch. For `raw-input` and `raw-output`, native hooks also trigger one short-lived detached worker after the raw append. The hook still returns immediately; the worker runs classification/candidate processing and never promotes memory or deletes raw data. It calls an LLM only if `SMEM_CLASSIFIER` is configured, and otherwise stays fully offline. This is not a persistent daemon: a lock prevents overlapping workers, and a future daemon remains deferred until filtering and review rules are stable.
 
 ## Raw Review Commands
 
@@ -269,8 +306,8 @@ Official memory:      smem store OR smem promote; read with smem recall/list/con
 | `smem move --project-id ...` | User | Project folder moved and old project id is known | Moves the active smem root to the current folder |
 | `smem move --from-path ...` | User | Project folder moved and old active path is known | Finds old project by active path, then moves active root to current folder |
 | `smem del --project-id ...` | User only | Accidental project mapping was created | Prints details, confirms by exact project id, then deletes registry + store |
-| `smem install --agent ... --hooks` | User | Once per project per agent | Installs bootstrap + native hook capture |
-| `smem uninstall --agent ... --hooks` | User | Removing smem from a project/agent | Removes bootstrap + native hook capture |
+| `smem install --agent ... --listen` | User | Once per project per agent | Installs bootstrap + native capture (hooks or opencode plugin) |
+| `smem uninstall --agent ... --listen` | User | Removing smem from a project/agent | Removes bootstrap + native capture (hooks or opencode plugin) |
 | `smem hook run ...` | Agent hook runtime | Called automatically by native hooks | Captures raw events; users normally do not run this |
 | `smem guide` | Agent or user | When unsure how smem works | Prints this guide |
 | `smem context` | Agent mostly | Start/resume task, "continue", project state questions | Reads official active memory |

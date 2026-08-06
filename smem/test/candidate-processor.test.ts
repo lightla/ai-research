@@ -14,7 +14,7 @@ afterEach(() => {
   }
 });
 
-test("processes legacy raw events that do not have classifier metadata", () => {
+test("processes legacy raw events that do not have classifier metadata", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-test-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
   tempDirs.push(home, projectDir);
@@ -39,7 +39,7 @@ test("processes legacy raw events that do not have classifier metadata", () => {
     "utf8"
   );
 
-  const result = processCandidates({ project, scope: "local", home });
+  const result = await processCandidates({ project, scope: "local", home });
   const memories = new MemoryRepository(project, { home });
 
   expect(result).toEqual({ scanned: 1, created: 1, skipped: 0, skippedByReason: { "no-text": 0, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
@@ -48,7 +48,7 @@ test("processes legacy raw events that do not have classifier metadata", () => {
   memories.close();
 });
 
-test("skips metadata-only hook events", () => {
+test("skips metadata-only hook events", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-test-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
   tempDirs.push(home, projectDir);
@@ -75,12 +75,12 @@ test("skips metadata-only hook events", () => {
     "utf8"
   );
 
-  const result = processCandidates({ project, scope: "local", home });
+  const result = await processCandidates({ project, scope: "local", home });
 
   expect(result).toEqual({ scanned: 1, created: 0, skipped: 1, skippedByReason: { "no-text": 1, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
 });
 
-test("uses referenced transcript text when a hook payload contains metadata only", () => {
+test("uses referenced transcript text when a hook payload contains metadata only", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-test-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
   tempDirs.push(home, projectDir);
@@ -112,14 +112,14 @@ test("uses referenced transcript text when a hook payload contains metadata only
     "utf8"
   );
 
-  const result = processCandidates({ project, scope: "local", home });
+  const result = await processCandidates({ project, scope: "local", home });
   const memories = new MemoryRepository(project, { home });
   expect(result.created).toBe(1);
   expect(memories.listCandidates()[0]?.content).toContain("quyết định dùng SQLite");
   memories.close();
 });
 
-test("processing the same capture twice is idempotent", () => {
+test("processing the same capture twice is idempotent", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-test-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
   tempDirs.push(home, projectDir);
@@ -133,14 +133,14 @@ test("processing the same capture twice is idempotent", () => {
     "utf8"
   );
 
-  const first = processCandidates({ project, scope: "local", home });
-  const second = processCandidates({ project, scope: "local", home });
+  const first = await processCandidates({ project, scope: "local", home });
+  const second = await processCandidates({ project, scope: "local", home });
   expect(first.created).toBe(1);
   expect(second.created).toBe(0);
   expect(second.skippedByReason.duplicate).toBe(1);
 });
 
-test("skips tool-only hook events instead of creating noisy candidates", () => {
+test("skips tool-only hook events instead of creating noisy candidates", async () => {
   const home = mkdtempSync(join(tmpdir(), "smem-test-"));
   const projectDir = mkdtempSync(join(tmpdir(), "smem-project-"));
   tempDirs.push(home, projectDir);
@@ -185,7 +185,7 @@ test("skips tool-only hook events instead of creating noisy candidates", () => {
     "utf8"
   );
 
-  const result = processCandidates({ project, scope: "local", home });
+  const result = await processCandidates({ project, scope: "local", home });
 
   expect(result).toEqual({ scanned: 1, created: 0, skipped: 1, skippedByReason: { "no-text": 1, "low-confidence": 0, "wrong-project": 0, "unsupported-label": 0, duplicate: 0 } });
 });
