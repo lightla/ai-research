@@ -63,6 +63,7 @@ function ensureMemoryTableCompatible(db: SqliteDatabase): void {
       project_id TEXT NOT NULL,
       scope TEXT NOT NULL DEFAULT 'local' CHECK (scope IN ('local', 'global')),
       type TEXT NOT NULL CHECK (type IN ('decision', 'context', 'todo', 'preference', 'error', 'note')),
+      namespace TEXT DEFAULT NULL,
       title TEXT,
       content TEXT NOT NULL,
       tags_json TEXT NOT NULL DEFAULT '[]',
@@ -75,9 +76,9 @@ function ensureMemoryTableCompatible(db: SqliteDatabase): void {
     );
 
     INSERT INTO memories_new
-      (id, project_id, scope, type, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
+      (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
     SELECT
-      id, project_id, scope, type, title, content, tags_json, status, source_kind, source_agent, '{}', created_at, updated_at
+      id, project_id, scope, type, NULL, title, content, tags_json, status, source_kind, source_agent, '{}', created_at, updated_at
     FROM memories;
 
     DROP TABLE memories;
@@ -94,6 +95,9 @@ function ensureMemoryColumns(db: SqliteDatabase): void {
   const names = new Set(columns.map((column) => column.name));
   if (!names.has("source_json")) {
     db.exec("ALTER TABLE memories ADD COLUMN source_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!names.has("namespace")) {
+    db.exec("ALTER TABLE memories ADD COLUMN namespace TEXT DEFAULT NULL");
   }
 }
 

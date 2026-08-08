@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useEffect } from 'react'
 import { CheckCircle2, Edit, Save, Trash2, X } from 'lucide-react'
 import type { HistoryMatch, Scope } from '@/lib/smem'
 import { deleteHistoryAction, promoteHistoryAction, updateHistoryAction } from '@/lib/actions'
@@ -32,10 +32,41 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
   const [isPending, startTransition] = useTransition()
   const [promoting, setPromoting] = useState(false)
   const [promoted, setPromoted] = useState(false)
-  const [type, setType] = useState<(typeof TYPES)[number]>('note')
-  const [title, setTitle] = useState('')
+  const [type, setType] = useState<(typeof TYPES)[number]>((match.type as any) || 'note')
+  const [namespace, setNamespace] = useState(match.namespace || '')
+  const [title, setTitle] = useState(match.title || '')
   const [content, setContent] = useState(match.content)
-  const [tagsInput, setTagsInput] = useState('')
+  const [tagsInput, setTagsInput] = useState(match.tags ? match.tags.join(', ') : '')
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const selected = params.get('selected')
+    if (selected === match.id) {
+      setPromoting(true)
+      setTimeout(() => {
+        const el = document.getElementById(match.id)
+        if (el) {
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        }
+      }, 150)
+    }
+  }, [match.id])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const selected = params.get('selected')
+    if (promoting) {
+      if (selected !== match.id) {
+        params.set('selected', match.id)
+        window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`)
+      }
+    } else {
+      if (selected === match.id) {
+        params.delete('selected')
+        window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`)
+      }
+    }
+  }, [promoting, match.id])
 
   const handleDelete = () => {
     if (!confirm('Xoá vĩnh viễn mục này khỏi lịch sử? Không thể hoàn tác.')) return
@@ -46,10 +77,35 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
   }
 
   const handleSaveRaw = () => {
+    const origTags = match.tags ? match.tags.join(', ') : ''
+    if (
+      content === match.content &&
+      type === ((match.type as any) || 'note') &&
+      namespace === (match.namespace || '') &&
+      title === (match.title || '') &&
+      tagsInput === origTags
+    ) {
+      setPromoting(false)
+      return
+    }
+    const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean)
     startTransition(async () => {
-      const updated = await updateHistoryAction(match.id, content)
-      if (updated) {
-        onUpdated(match.id, updated)
+      try {
+        const updated = await updateHistoryAction(match.id, content, {
+          type,
+          namespace: namespace.trim() || null,
+          title: title.trim() || null,
+          tags
+        })
+        if (updated) {
+          onUpdated(match.id, updated)
+          setPromoting(false)
+        } else {
+          alert("Không thể lưu: Định dạng bản ghi này không hỗ trợ sửa đổi nội dung trực tiếp.")
+        }
+      } catch (error) {
+        console.error(error)
+        alert("Lỗi kết nối hoặc định dạng bản ghi không hỗ trợ chỉnh sửa.")
       }
     })
   }
@@ -57,20 +113,21 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
   const handlePromote = () => {
     const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean)
     startTransition(async () => {
-      await promoteHistoryAction(scope, projectId, { type, title, content, tags })
+      await promoteHistoryAction(scope, projectId, { type, namespace: namespace.trim() || null, title, content, tags })
       setPromoting(false)
       setPromoted(true)
     })
   }
 
   return (
-    <li className="px-4 py-3 rounded-lg" style={{ background: 'var(--surface)', border: '1.5px solid var(--border)' }}>
+    <li id={match.id} className="px-4 py-3 rounded-lg" style={{ background: 'var(--surface)', border: '1.5px solid var(--border)' }}>
       <div className="flex items-center gap-1.5 flex-wrap mb-2">
         <Tag>{match.kind}</Tag>
         {match.recordKind && <Tag>{match.recordKind}</Tag>}
         {match.eventName && <Tag>{match.eventName}</Tag>}
         {match.agent && <Tag>{match.agent}</Tag>}
         {match.timestamp && <Tag>{match.timestamp}</Tag>}
+        {match.namespace && <Tag>ns:{match.namespace}</Tag>}
         <Tag>{match.id}</Tag>
 
         <div className="ml-auto flex items-center gap-2">
@@ -112,17 +169,24 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
               ))}
             </select>
             <input
+              value={namespace}
+              onChange={(e) => setNamespace(e.target.value)}
+              placeholder="Namespace (optional)"
+              className="flex-1 min-w-[140px] px-2 py-1 rounded border text-xs bg-transparent outline-none"
+              style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+            />
+            <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Title (optional)"
-              className="flex-1 min-w-[160px] px-2 py-1 rounded border text-xs bg-transparent outline-none"
+              className="flex-1 min-w-[140px] px-2 py-1 rounded border text-xs bg-transparent outline-none"
               style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
             />
             <input
               value={tagsInput}
               onChange={(e) => setTagsInput(e.target.value)}
               placeholder="tags, comma, separated"
-              className="flex-1 min-w-[160px] px-2 py-1 rounded border text-xs bg-transparent outline-none"
+              className="flex-1 min-w-[140px] px-2 py-1 rounded border text-xs bg-transparent outline-none"
               style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
             />
           </div>
@@ -161,7 +225,17 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
         </div>
       ) : (
         <div className="text-xs">
+          {match.title && <div className="text-sm font-semibold mb-1" style={{ color: 'var(--text)' }}>{match.title}</div>}
           <MarkdownRenderer content={wrapIfCodeLike(match.content)} />
+          {match.tags && match.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {match.tags.map((tag) => (
+                <span key={tag} className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--muted)', border: '1px solid var(--border)' }}>
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </li>

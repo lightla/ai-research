@@ -13,6 +13,7 @@ export const MemoryStatusSchema = z.enum(["active", "pending-review", "rejected"
 
 export const MemoryInputSchema = z.object({
   type: MemoryTypeSchema.default("note"),
+  namespace: z.string().trim().min(1).nullable().optional(),
   title: z.string().trim().min(1).optional(),
   content: z.string().trim().min(1),
   tags: z.array(z.string().trim().min(1)).default([]),

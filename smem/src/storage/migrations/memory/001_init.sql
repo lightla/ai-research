@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS memories (
   project_id TEXT NOT NULL,
   scope TEXT NOT NULL DEFAULT 'local' CHECK (scope IN ('local', 'global')),
   type TEXT NOT NULL CHECK (type IN ('decision', 'context', 'todo', 'preference', 'error', 'note')),
+  namespace TEXT DEFAULT NULL,
   title TEXT,
   content TEXT NOT NULL,
   tags_json TEXT NOT NULL DEFAULT '[]',

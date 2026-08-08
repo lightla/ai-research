@@ -22,6 +22,7 @@ export default function MemoryDetail({ memory, scope, projectId }: Props) {
   const [isPending, startTransition] = useTransition()
   const [editing, setEditing] = useState(false)
   const [type, setType] = useState(memory.type)
+  const [namespace, setNamespace] = useState(memory.namespace ?? '')
   const [title, setTitle] = useState(memory.title ?? '')
   const [content, setContent] = useState(memory.content)
   const [tagsInput, setTagsInput] = useState(memory.tags.join(', '))
@@ -37,7 +38,7 @@ export default function MemoryDetail({ memory, scope, projectId }: Props) {
   const handleSave = () => {
     const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean)
     startTransition(async () => {
-      await saveMemoryAction(scope, projectId, memory.id, { type, title, content, tags })
+      await saveMemoryAction(scope, projectId, memory.id, { type, namespace: namespace.trim() || null, title, content, tags })
       setEditing(false)
       router.refresh()
     })
@@ -110,6 +111,7 @@ export default function MemoryDetail({ memory, scope, projectId }: Props) {
                     onClick={() => {
                       setEditing(false)
                       setType(memory.type)
+                      setNamespace(memory.namespace ?? '')
                       setTitle(memory.title ?? '')
                       setContent(memory.content)
                       setTagsInput(memory.tags.join(', '))
@@ -166,20 +168,36 @@ export default function MemoryDetail({ memory, scope, projectId }: Props) {
 
           <div className="flex items-center gap-2 mt-2 flex-wrap text-xs font-mono">
             {editing ? (
-              <select
-                value={type}
-                onChange={(e) => setType(e.target.value as typeof type)}
-                className="px-1.5 py-0.5 rounded border bg-transparent"
-                style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
-              >
-                {TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={type}
+                  onChange={(e) => setType(e.target.value as typeof type)}
+                  className="px-1.5 py-0.5 rounded border bg-transparent"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+                >
+                  {TYPES.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                <input
+                  value={namespace}
+                  onChange={(e) => setNamespace(e.target.value)}
+                  placeholder="Namespace (optional)"
+                  className="px-2 py-0.5 rounded border bg-transparent text-xs outline-none"
+                  style={{ borderColor: 'var(--border)', color: 'var(--text)', height: '24px' }}
+                />
+              </div>
             ) : (
-              <span className="px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
-                {memory.type}
-              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+                  {memory.type}
+                </span>
+                {memory.namespace && (
+                  <span className="px-1.5 py-0.5 rounded font-bold" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
+                    ns:{memory.namespace}
+                  </span>
+                )}
+              </div>
             )}
             <span style={{ color: 'var(--muted)' }}>{memory.status}</span>
             <span style={{ color: 'var(--muted)' }}>· updated {memory.updatedAt}</span>

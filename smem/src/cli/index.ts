@@ -386,13 +386,14 @@ program
   .command("store")
   .description("Store a memory record")
   .option("--type <type>", "Memory type", "note")
+  .option("--namespace <namespace>", "Namespace (Level 1 classification)")
   .option("--title <title>", "Memory title")
   .option("--tags <tags>", "Comma-separated tags")
   .option("--tag <tag>", "Single tag; can be repeated", collectOption, [])
   .option("--scope <scope>", "Memory scope: local or global", "local")
   .argument("<content...>", "Memory content")
   .action(
-    (contentParts: string[], options: { type: string; title?: string; tags?: string; tag: string[]; scope: string }) => {
+    (contentParts: string[], options: { type: string; namespace?: string; title?: string; tags?: string; tag: string[]; scope: string }) => {
     const type = MemoryTypeSchema.parse(options.type);
     const scope = parseScope(options.scope);
     const content = contentParts.join(" ").trim();
@@ -400,6 +401,7 @@ program
     withMemoryRepository(scope, (repo) => {
       const input = MemoryInputSchema.parse({
         type,
+        namespace: options.namespace ?? null,
         ...(options.title ? { title: options.title } : {}),
         content,
         tags: parseTags(options.tags, options.tag)
@@ -423,6 +425,29 @@ program
   });
 
 program
+  .command("namespaces")
+  .description("List all unique namespaces")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((options: { scope: string }) => {
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      const list = repo.namespaces();
+      console.log(list.length > 0 ? list.join("\n") : "No namespaces found.");
+    });
+  });
+
+program
+  .command("tags")
+  .description("List all unique tags, optionally filtered by namespace")
+  .option("--namespace <namespace>", "Filter tags by namespace")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((options: { namespace?: string; scope: string }) => {
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      const list = repo.tags(options.namespace);
+      console.log(list.length > 0 ? list.map((tag) => `#${tag}`).join("\n") : "No tags found.");
+    });
+  });
+
+program
   .command("show <memory-id>")
   .description("Show one official, candidate, rejected, or archived memory by id")
   .option("--scope <scope>", "Memory scope: local or global", "local")
@@ -440,19 +465,22 @@ program
   .command("edit <memory-id>")
   .description("Edit an active or pending-review memory without changing its id")
   .option("--type <type>", "Memory type")
+  .option("--namespace <namespace>", "Memory namespace")
+  .option("--clear-namespace", "Remove the current namespace")
   .option("--title <title>", "Memory title")
   .option("--content <content>", "Memory content")
   .option("--tags <tags>", "Replace tags with comma-separated values")
   .option("--clear-title", "Remove the current title")
   .option("--scope <scope>", "Memory scope: local or global", "local")
-  .action((memoryId: string, options: { type?: string; title?: string; content?: string; tags?: string; clearTitle?: boolean; scope: string }) => {
-    if (!options.type && options.title === undefined && !options.content && options.tags === undefined && !options.clearTitle) {
-      throw new Error("Provide at least one field to edit: --type, --title, --content, --tags, or --clear-title.");
+  .action((memoryId: string, options: { type?: string; namespace?: string; clearNamespace?: boolean; title?: string; content?: string; tags?: string; clearTitle?: boolean; scope: string }) => {
+    if (!options.type && options.namespace === undefined && !options.clearNamespace && options.title === undefined && !options.content && options.tags === undefined && !options.clearTitle) {
+      throw new Error("Provide at least one field to edit: --type, --namespace, --clear-namespace, --title, --content, --tags, or --clear-title.");
     }
     withMemoryRepository(parseScope(options.scope), (repo) => {
       const type = options.type ? MemoryTypeSchema.parse(options.type) : undefined;
       console.log(printMemory(repo.update(memoryId, {
         ...(type ? { type } : {}),
+        ...(options.clearNamespace ? { namespace: null } : options.namespace !== undefined ? { namespace: options.namespace } : {}),
         ...(options.clearTitle ? { title: null } : options.title !== undefined ? { title: options.title } : {}),
         ...(options.content ? { content: options.content } : {}),
         ...(options.tags !== undefined ? { tags: parseTags(options.tags) } : {})
@@ -540,6 +568,7 @@ program
   .option("--type <type>", "Filter by memory type")
   .option("--tag <tag>", "Filter by exact memory tag")
   .option("--topic <topic>", "Filter by tag or offline classification topic")
+  .option("--namespace <namespace>", "Filter by exact namespace")
   .option("--status <status>", "Filter by status; defaults to active")
   .action(
     async (
@@ -555,6 +584,7 @@ program
         type?: string;
         tag?: string;
         topic?: string;
+        namespace?: string;
         status?: string;
       }
     ) => {
@@ -569,6 +599,7 @@ program
         ...(options.type ? { type: MemoryTypeSchema.parse(options.type) } : {}),
         ...(options.tag ? { tag: options.tag } : {}),
         ...(options.topic ? { topic: options.topic } : {}),
+        ...(options.namespace ? { namespace: options.namespace } : {}),
         ...(options.status ? { status: parseMemoryStatus(options.status) } : {})
       };
       const results = await withMemoryRepositoryAsync(scope, async (repo, project) => {
@@ -608,24 +639,36 @@ const raw = program
   .description("Search raw hook captures before they become candidates or memories")
   .argument("<query...>", "Raw search query")
   .option("--limit <n>", "Raw event limit", parseInteger, 20)
+  .option("--offset <n>", "Search offset", parseInteger, 0)
   .option("--agent <agent>", "Filter by agent: codex, claude-code, antigravity, or opencode")
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--json", "Print raw JSON lines")
   .option("--full", "Print full formatted raw event JSON")
   .option("--after <n>", "Compatibility alias for `smem history <query> --after <n>`", parseInteger)
-raw.action((queryParts: string[], options: { limit: number; agent?: string; kind?: string; json?: boolean; full?: boolean; after?: number }) => {
+  .option("--before <n>", "Compatibility alias for `smem history <query> --before <n>`", parseInteger)
+raw.action((queryParts: string[], options: { limit: number; offset: number; agent?: string; kind?: string; json?: boolean; full?: boolean; after?: number; before?: number }) => {
     const threadMode = queryParts[0] === "thread";
     const query = (threadMode ? queryParts.slice(1) : queryParts).join(" ");
-    if (threadMode || options.after !== undefined) {
+    if (threadMode || options.after !== undefined || options.before !== undefined) {
       const result = rawThread({
         query,
-        after: options.after ?? 10,
+        after: options.after ?? (options.before !== undefined ? 0 : 10),
+        ...(options.before !== undefined ? { before: options.before } : {}),
+        ...(options.offset !== undefined ? { offset: options.offset } : {}),
         ...(options.agent ? { agent: parseAgentName(options.agent) } : {}),
         ...(options.kind ? { kind: parseCaptureKind(options.kind) } : {})
       });
       if (result.records.length === 0) {
         console.log("No raw thread found.");
         return;
+      }
+
+      const isId = query && !query.includes(" ") && query.length >= 10 && result.totalMatches === 1;
+      if (isId) {
+        console.log(`Showing context for record ID: ${query}\n`);
+      } else if (result.totalMatches && result.totalMatches > 0 && query !== "") {
+        const matchIndexStr = options.offset ? ` match at offset ${options.offset}` : " best match";
+        console.log(`Found ${result.totalMatches} matches. Showing context around the${matchIndexStr}:\n`);
       }
 
       console.log(
@@ -639,6 +682,7 @@ raw.action((queryParts: string[], options: { limit: number; agent?: string; kind
     const result = searchRaw({
       query,
       limit: options.limit,
+      offset: options.offset,
       ...(options.agent ? { agent: parseAgentName(options.agent) } : {}),
       ...(options.kind ? { kind: parseCaptureKind(options.kind) } : {})
     });
@@ -648,6 +692,9 @@ raw.action((queryParts: string[], options: { limit: number; agent?: string; kind
       console.log("No raw events found.");
       return;
     }
+
+    const totalFound = result.totalEvents + result.totalTranscripts;
+    console.log(`Found ${totalFound} raw events/transcripts matching query: "${query}"\n`);
 
     console.log(
       records
@@ -682,20 +729,33 @@ const history = program
   .description("Read conversation history from a raw transcript match onward")
   .argument("<query...>", "Raw search query")
   .option("--after <n>", "Number of meaningful (user/assistant) records after the match", parseInteger, 10)
+  .option("--before <n>", "Number of meaningful (user/assistant) records before the match", parseInteger, 0)
+  .option("--offset <n>", "Select the N-th match as the anchor", parseInteger, 0)
   .option("--agent <agent>", "Filter by agent: codex, claude-code, antigravity, or opencode")
   .option("--kind <kind>", "Filter by capture kind: raw-input, raw-output, tool-event, or raw-event")
   .option("--full", "Print full transcript JSON records")
   .option("--verbose", "Include thinking, tool-only, and command-result records")
-history.action((queryParts: string[], options: { after: number; agent?: string; kind?: string; full?: boolean; verbose?: boolean }) => {
+history.action((queryParts: string[], options: { after: number; before: number; offset: number; agent?: string; kind?: string; full?: boolean; verbose?: boolean }) => {
+    const query = queryParts.join(" ");
     const result = rawThread({
-      query: queryParts.join(" "),
+      query,
       after: options.after,
+      ...(options.before !== undefined ? { before: options.before } : {}),
+      ...(options.offset !== undefined ? { offset: options.offset } : {}),
       ...(options.agent ? { agent: parseAgentName(options.agent) } : {}),
       ...(options.kind ? { kind: parseCaptureKind(options.kind) } : {})
     });
     if (result.records.length === 0) {
       console.log("No history found.");
       return;
+    }
+
+    const isId = query && !query.includes(" ") && query.length >= 10 && result.totalMatches === 1;
+    if (isId) {
+      console.log(`Showing context for record ID: ${query}\n`);
+    } else if (result.totalMatches && result.totalMatches > 0 && query !== "") {
+      const matchIndexStr = options.offset ? ` match at offset ${options.offset}` : " best match";
+      console.log(`Found ${result.totalMatches} matches. Showing context around the${matchIndexStr}:\n`);
     }
 
     const records = options.full || options.verbose ? result.records : result.records.filter(isMeaningfulHistoryRecord);

@@ -9,6 +9,7 @@ export type RecallOptions = {
   type?: MemoryRecord["type"];
   tag?: string;
   topic?: string;
+  namespace?: string;
   status?: RecallStatus;
 };
 
@@ -37,12 +38,14 @@ export function rankMemories(memories: MemoryRecord[], options: RecallOptions): 
   const terms = tokenize(query);
   const tag = options.tag?.trim().toLowerCase();
   const topic = options.topic?.trim().toLowerCase();
+  const namespace = options.namespace?.trim().toLowerCase();
   const status = options.status ?? "active";
 
   return memories
     .filter((memory) => memory.status === status)
     .filter((memory) => !options.type || memory.type === options.type)
     .filter((memory) => !tag || memory.tags.some((value) => value.toLowerCase() === tag))
+    .filter((memory) => !namespace || memory.namespace?.toLowerCase() === namespace)
     .filter((memory) => !topic || memoryMatchesTopic(memory, topic))
     .map((memory) => scoreMemory(memory, query, terms, options.mode ?? "fts"))
     .filter((result) => terms.length === 0 || result.reason.matches.length > 0)
@@ -62,10 +65,11 @@ function scoreMemory(memory: MemoryRecord, query: string, terms: string[], mode:
   const title = memory.title?.toLowerCase() ?? "";
   const content = memory.content.toLowerCase();
   const tags = memory.tags.map((tag) => tag.toLowerCase());
+  const namespace = memory.namespace?.toLowerCase() ?? "";
   const matches: string[] = [];
   let score = TYPE_PRIORITY[memory.type];
 
-  if (mode === "contains" && query && !title.includes(query) && !content.includes(query) && !tags.some((tag) => tag.includes(query))) {
+  if (mode === "contains" && query && !title.includes(query) && !content.includes(query) && !tags.some((tag) => tag.includes(query)) && !namespace.includes(query)) {
     return { memory, reason: { score, matches: [], adjustments: [] } };
   }
 
@@ -76,6 +80,10 @@ function scoreMemory(memory: MemoryRecord, query: string, terms: string[], mode:
   if (query && title.includes(query)) {
     score += 6;
     matches.push("exact-title");
+  }
+  if (query && namespace.includes(query)) {
+    score += 5.5;
+    matches.push("exact-namespace");
   }
 
   for (const term of terms) {
@@ -90,6 +98,10 @@ function scoreMemory(memory: MemoryRecord, query: string, terms: string[], mode:
     if (tags.some((tag) => tag.includes(term))) {
       score += 2.5;
       matches.push(`tag:${term}`);
+    }
+    if (namespace.includes(term)) {
+      score += 2.8;
+      matches.push(`namespace:${term}`);
     }
   }
 

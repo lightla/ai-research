@@ -28,10 +28,11 @@ export async function saveMemoryAction(
   scope: Scope,
   projectId: string | null,
   id: string,
-  input: { type: string; title: string; content: string; tags: string[] }
+  input: { type: string; namespace?: string | null; title: string; content: string; tags: string[] }
 ) {
   updateMemory(scope, projectId, id, {
     type: input.type as any,
+    namespace: input.namespace ?? null,
     title: input.title.trim().length > 0 ? input.title.trim() : null,
     content: input.content,
     tags: input.tags,
@@ -72,20 +73,25 @@ export async function deleteHistoryAction(kind: 'event' | 'transcript', id: stri
   return deleteHistoryMatch(kind, id)
 }
 
-export async function updateHistoryAction(id: string, content: string): Promise<HistoryMatch | null> {
-  return updateHistoryContent(id, content)
+export async function updateHistoryAction(
+  id: string,
+  content: string,
+  extra?: { type?: string; namespace?: string | null; title?: string | null; tags?: string[] }
+): Promise<HistoryMatch | null> {
+  return updateHistoryContent(id, content, extra)
 }
 
 export async function promoteHistoryAction(
   scope: Scope,
   projectId: string | null,
-  input: { type: string; title: string; content: string; tags: string[] }
+  input: { type: string; namespace?: string | null; title: string; content: string; tags: string[] }
 ) {
   const memory = createMemory(
     scope,
     projectId,
     {
       type: input.type as any,
+      namespace: input.namespace ?? null,
       ...(input.title.trim() ? { title: input.title.trim() } : {}),
       content: input.content,
       tags: input.tags,

@@ -324,6 +324,7 @@ function candidateInput(event: NormalizedHookEvent): MemoryInput {
   const text = textForCandidate(event) ?? JSON.stringify(event.payload);
   return {
     type,
+    namespace: "unknown",
     title: titleForCandidate(event),
     content: text,
     tags: event.classification.topics.slice(0, 8),

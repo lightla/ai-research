@@ -11,6 +11,7 @@ type MemoryRow = {
   project_id: string;
   scope: "local" | "global";
   type: MemoryRecord["type"];
+  namespace: string | null;
   title: string | null;
   content: string;
   tags_json: string;
@@ -31,6 +32,7 @@ export type CreateMemoryOptions = {
 
 export type UpdateMemoryInput = {
   type?: MemoryRecord["type"];
+  namespace?: string | null;
   title?: string | null;
   content?: string;
   tags?: string[];
@@ -59,6 +61,7 @@ export class MemoryRepository {
       projectId: this.projectIdForScope(),
       scope: this.scope,
       type: parsed.type,
+      namespace: parsed.namespace || "unknown",
       ...(parsed.title ? { title: parsed.title } : {}),
       content: parsed.content,
       tags: parsed.tags,
@@ -73,15 +76,16 @@ export class MemoryRepository {
     this.db
       .prepare(
         `INSERT INTO memories
-          (id, project_id, scope, type, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
+          (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
          VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.id,
         record.projectId,
         record.scope,
         record.type,
+        record.namespace || "unknown",
         record.title ?? null,
         record.content,
         JSON.stringify(record.tags),
@@ -107,6 +111,36 @@ export class MemoryRepository {
       .all(this.projectIdForScope(), this.scope, limit) as MemoryRow[];
 
     return rows.map((row) => this.mapMemory(row));
+  }
+
+  namespaces(): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT namespace FROM memories
+         WHERE project_id = ? AND scope = ? AND status = 'active' AND namespace IS NOT NULL`
+      )
+      .all(this.projectIdForScope(), this.scope) as { namespace: string }[];
+    return rows.map((r) => r.namespace).sort();
+  }
+
+  tags(namespace?: string): string[] {
+    let query = `SELECT tags_json FROM memories WHERE project_id = ? AND scope = ? AND status = 'active'`;
+    const params = [this.projectIdForScope(), this.scope];
+    if (namespace) {
+      query += ` AND namespace = ?`;
+      params.push(namespace);
+    }
+    const rows = this.db.prepare(query).all(...params) as { tags_json: string }[];
+    const tagsSet = new Set<string>();
+    for (const row of rows) {
+      try {
+        const tags = JSON.parse(row.tags_json) as string[];
+        for (const tag of tags) {
+          tagsSet.add(tag);
+        }
+      } catch {}
+    }
+    return [...tagsSet].sort();
   }
 
   listCandidates(limit = 20): MemoryRecord[] {
@@ -253,6 +287,7 @@ export class MemoryRepository {
 
     const parsed = MemoryInputSchema.parse({
       type: input.type ?? current.type,
+      namespace: (input.namespace === undefined ? current.namespace : input.namespace) || "unknown",
       ...(input.title === null ? {} : { title: input.title ?? current.title }),
       content: input.content ?? current.content,
       tags: input.tags ?? current.tags,
@@ -262,11 +297,12 @@ export class MemoryRepository {
     this.db
       .prepare(
         `UPDATE memories
-         SET type = ?, title = ?, content = ?, tags_json = ?, updated_at = ?
+         SET type = ?, namespace = ?, title = ?, content = ?, tags_json = ?, updated_at = ?
          WHERE id = ? AND project_id = ? AND scope = ?`
       )
       .run(
         parsed.type,
+        parsed.namespace || "unknown",
         parsed.title ?? null,
         parsed.content,
         JSON.stringify(parsed.tags),
@@ -335,12 +371,12 @@ export class MemoryRepository {
     let skipped = 0;
     const insert = this.db.prepare(
       `INSERT INTO memories
-        (id, project_id, scope, type, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const replace = this.db.prepare(
       `UPDATE memories
-       SET type = ?, title = ?, content = ?, tags_json = ?, status = ?, source_kind = ?, source_agent = ?, source_json = ?, created_at = ?, updated_at = ?
+       SET type = ?, namespace = ?, title = ?, content = ?, tags_json = ?, status = ?, source_kind = ?, source_agent = ?, source_json = ?, created_at = ?, updated_at = ?
        WHERE id = ? AND project_id = ? AND scope = ?`
     );
 
@@ -355,6 +391,7 @@ export class MemoryRepository {
         if (existing) {
           replace.run(
             record.type,
+            record.namespace ?? null,
             record.title ?? null,
             record.content,
             JSON.stringify(record.tags),
@@ -374,6 +411,7 @@ export class MemoryRepository {
             this.projectIdForScope(),
             this.scope,
             record.type,
+            record.namespace ?? null,
             record.title ?? null,
             record.content,
             JSON.stringify(record.tags),
@@ -492,6 +530,7 @@ export class MemoryRepository {
       projectId: row.project_id,
       scope: row.scope,
       type: row.type,
+      namespace: row.namespace || "unknown",
       ...(row.title ? { title: row.title } : {}),
       content: row.content,
       tags,
@@ -505,8 +544,9 @@ export class MemoryRepository {
   }
 
   private displayLine(memory: MemoryRecord): string {
+    const namespacePrefix = memory.namespace && memory.namespace !== "unknown" ? `[${memory.namespace}] ` : "";
     const prefix = memory.title ? `${memory.title}: ` : "";
-    return `${prefix}${memory.content}`;
+    return `${namespacePrefix}${prefix}${memory.content}`;
   }
 
   private projectIdForScope(): string {

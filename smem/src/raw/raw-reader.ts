@@ -26,18 +26,33 @@ export type SmemHistoryRecord = {
   role: "user" | "assistant" | "tool" | "system" | "unknown";
   recordKind: "user-input" | "assistant-output" | "assistant-thinking" | "tool-call" | "tool-result" | "metadata" | "unknown";
   content?: string;
+  type?: string;
+  namespace?: string | null;
+  title?: string | null;
+  tags?: string[];
   raw: Record<string, unknown>;
 };
 
 export type RawSearchResult = {
   events: RawEventRecord[];
   transcripts: TranscriptRecord[];
+  totalEvents: number;
+  totalTranscripts: number;
 };
 
 export type RawThreadResult = {
   anchor: TranscriptRecord | null;
   records: TranscriptRecord[];
+  totalMatches?: number;
 };
+
+export interface RawEventRecordsArray extends Array<RawEventRecord> {
+  totalCount?: number;
+}
+
+export interface TranscriptRecordsArray extends Array<TranscriptRecord> {
+  totalCount?: number;
+}
 
 export function searchRaw(options: {
   query: string;
@@ -50,7 +65,12 @@ export function searchRaw(options: {
 }): RawSearchResult {
   const events = searchRawEvents(options);
   const transcripts = searchReferencedTranscripts(options);
-  return { events, transcripts };
+  return {
+    events,
+    transcripts,
+    totalEvents: (events as RawEventRecordsArray).totalCount ?? events.length,
+    totalTranscripts: (transcripts as TranscriptRecordsArray).totalCount ?? transcripts.length
+  };
 }
 
 export function searchRawEvents(options: {
@@ -64,7 +84,9 @@ export function searchRawEvents(options: {
 }): RawEventRecord[] {
   const queuePath = join(options.home ?? defaultSmartMemoryHome(), "events", "pending.jsonl");
   if (!existsSync(queuePath)) {
-    return [];
+    const emptyResult: RawEventRecordsArray = [];
+    emptyResult.totalCount = 0;
+    return emptyResult;
   }
 
   const query = options.query.trim().toLowerCase();
@@ -107,7 +129,9 @@ export function searchRawEvents(options: {
   // `matches` accumulates oldest-first (file order); reverse for newest-first paging.
   const newestFirst = matches.slice().reverse();
   const offset = options.offset ?? 0;
-  return newestFirst.slice(offset, offset + (options.limit ?? 20));
+  const records = newestFirst.slice(offset, offset + (options.limit ?? 20)) as RawEventRecordsArray;
+  records.totalCount = matches.length;
+  return records;
 }
 
 export function findRawEventById(eventId: string, home = defaultSmartMemoryHome()): RawEventRecord | null {
@@ -184,7 +208,9 @@ export function searchReferencedTranscripts(options: {
     : matches.sort((left, right) => recencyKey(right) - recencyKey(left));
 
   const offset = options.offset ?? 0;
-  return sorted.slice(offset, offset + (options.limit ?? 20));
+  const records = sorted.slice(offset, offset + (options.limit ?? 20)) as TranscriptRecordsArray;
+  records.totalCount = matches.length;
+  return records;
 }
 
 function recencyKey(record: TranscriptRecord): number {
@@ -196,29 +222,77 @@ function recencyKey(record: TranscriptRecord): number {
 export function rawThread(options: {
   query: string;
   home?: string;
+  before?: number;
   after?: number;
   agent?: string;
   kind?: string;
+  offset?: number;
 }): RawThreadResult {
-  const [anchor] = searchReferencedTranscripts({
-    query: options.query,
-    limit: 1,
-    ...(options.home ? { home: options.home } : {}),
-    ...(options.agent ? { agent: options.agent } : {}),
-    ...(options.kind ? { kind: options.kind } : {})
-  });
-  if (!anchor || !existsSync(anchor.transcriptPath)) {
-    return { anchor: null, records: [] };
+  const query = options.query.trim();
+  let anchor: TranscriptRecord | null = null;
+  let totalMatches = 0;
+
+  if (query && !query.includes(" ") && query.length >= 10) {
+    anchor = findTranscriptRecordById(query, options.home);
+    if (anchor) {
+      totalMatches = 1;
+    }
   }
 
+  if (!anchor) {
+    const matches = searchReferencedTranscripts({
+      query: options.query,
+      limit: 1,
+      ...(options.offset !== undefined ? { offset: options.offset } : {}),
+      ...(options.home ? { home: options.home } : {}),
+      ...(options.agent ? { agent: options.agent } : {}),
+      ...(options.kind ? { kind: options.kind } : {})
+    });
+    anchor = matches[0] || null;
+    totalMatches = (matches as TranscriptRecordsArray).totalCount ?? (anchor ? 1 : 0);
+  }
+
+  if (!anchor || !existsSync(anchor.transcriptPath)) {
+    return { anchor: null, records: [], totalMatches: 0 };
+  }
+
+  const before = options.before ?? 0;
   const after = options.after ?? 10;
-  const records: TranscriptRecord[] = [];
   const lines = readFileSync(anchor.transcriptPath, "utf8").split(/\n/);
 
-  // `after` counts meaningful records (user-input/assistant-output) found beyond the anchor, not
-  // raw lines — a match is often followed by several thinking/tool-call/tool-result lines before
-  // the next real conversation turn, so counting raw lines made `--after 1` and `--after 3` look
-  // identical whenever the next turn was buried past line 3.
+  // Get before records (scanned backward from anchor)
+  const beforeRecords: TranscriptRecord[] = [];
+  let meaningfulBefore = 0;
+  for (let lineNumber = anchor.lineNumber - 1; lineNumber >= 1; lineNumber -= 1) {
+    const line = lines[lineNumber - 1]?.trim();
+    if (!line) {
+      continue;
+    }
+
+    let record: TranscriptRecord;
+    try {
+      record = {
+        transcriptPath: anchor.transcriptPath,
+        lineNumber,
+        event: JSON.parse(line) as Record<string, unknown>
+      };
+    } catch {
+      continue;
+    }
+
+    beforeRecords.push(record);
+
+    if (isMeaningfulHistoryRecord(record)) {
+      meaningfulBefore += 1;
+      if (meaningfulBefore >= before) {
+        break;
+      }
+    }
+  }
+  beforeRecords.reverse();
+
+  // Get anchor and after records (scanned forward from anchor)
+  const afterRecords: TranscriptRecord[] = [];
   let meaningfulAfter = 0;
   for (let lineNumber = anchor.lineNumber; lineNumber <= lines.length; lineNumber += 1) {
     const line = lines[lineNumber - 1]?.trim();
@@ -237,7 +311,7 @@ export function rawThread(options: {
       continue;
     }
 
-    records.push(record);
+    afterRecords.push(record);
 
     if (lineNumber === anchor.lineNumber) {
       if (after <= 0) {
@@ -254,7 +328,8 @@ export function rawThread(options: {
     }
   }
 
-  return { anchor, records };
+  const records = [...beforeRecords, ...afterRecords];
+  return { anchor, records, totalMatches };
 }
 
 export function findTranscriptRecordById(recordId: string, home = defaultSmartMemoryHome()): TranscriptRecord | null {
@@ -297,7 +372,8 @@ export function findTranscriptRecordById(recordId: string, home = defaultSmartMe
 export function updateTranscriptRecordContent(
   recordId: string,
   newContent: string,
-  home = defaultSmartMemoryHome()
+  home = defaultSmartMemoryHome(),
+  extra?: { type?: string; namespace?: string | null; title?: string | null; tags?: string[] }
 ): string | null {
   const record = findTranscriptRecordById(recordId, home);
   if (!record) {
@@ -307,6 +383,13 @@ export function updateTranscriptRecordContent(
   const updatedEvent = withUpdatedContent(record.event, newContent);
   if (!updatedEvent) {
     throw new Error("This record's raw format doesn't support in-place content editing.");
+  }
+
+  if (extra && updatedEvent) {
+    if (extra.type !== undefined) updatedEvent.type = extra.type;
+    if (extra.namespace !== undefined) updatedEvent.namespace = extra.namespace;
+    if (extra.title !== undefined) updatedEvent.title = extra.title;
+    if (extra.tags !== undefined) updatedEvent.tags = extra.tags;
   }
 
   const lines = readFileSync(record.transcriptPath, "utf8").split(/\n/);
@@ -326,15 +409,22 @@ function withUpdatedContent(event: Record<string, unknown>, newContent: string):
   }
 
   const contentArray = event["content"];
-  if (Array.isArray(contentArray) && contentArray.length === 1) {
-    const item = contentArray[0];
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      const textKey = (["text", "input_text", "output_text"] as const).find(
-        (key) => typeof (item as Record<string, unknown>)[key] === "string"
-      );
-      if (textKey) {
-        return { ...event, content: [{ ...(item as Record<string, unknown>), [textKey]: newContent }] };
+  if (Array.isArray(contentArray)) {
+    let updated = false;
+    const newArray = contentArray.map((item) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const textKey = (["text", "input_text", "output_text"] as const).find(
+          (key) => typeof (item as Record<string, unknown>)[key] === "string"
+        );
+        if (textKey && !updated) {
+          updated = true;
+          return { ...(item as Record<string, unknown>), [textKey]: newContent };
+        }
       }
+      return item;
+    });
+    if (updated) {
+      return { ...event, content: newArray };
     }
   }
 
@@ -652,6 +742,10 @@ export function normalizeTranscriptRecord(record: TranscriptRecord): SmemHistory
     role: roleForRecordKind(recordKind),
     recordKind,
     ...(content ? { content } : thinking ? { content: thinking } : {}),
+    ...(record.event["type"] ? { type: String(record.event["type"]) } : {}),
+    namespace: stringField(record.event, "namespace") ?? null,
+    title: stringField(record.event, "title") ?? null,
+    tags: Array.isArray(record.event["tags"]) ? (record.event["tags"] as string[]) : [],
     raw: record.event
   };
 }

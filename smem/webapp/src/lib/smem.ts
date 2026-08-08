@@ -106,6 +106,10 @@ export type HistoryMatch = {
   recordKind?: string;
   eventName?: string;
   content: string;
+  type?: string;
+  namespace?: string | null;
+  title?: string | null;
+  tags?: string[];
 };
 
 // Raw transcript history is scoped by `projectPath` when the caller knows which project it's
@@ -132,6 +136,10 @@ export function searchHistory(
       agent: normalized.sourceAgent,
       recordKind: normalized.recordKind,
       content: normalized.content ?? "",
+      type: normalized.type,
+      namespace: normalized.namespace ?? null,
+      title: normalized.title ?? null,
+      tags: normalized.tags ?? [],
     };
   });
 }
@@ -142,24 +150,37 @@ export function deleteHistoryMatch(kind: "event" | "transcript", id: string): bo
 
 // Content-addressed ids change when content changes (see updateTranscriptRecordContent), so this
 // returns the freshly re-read match under its new id rather than just a success flag.
-export function updateHistoryContent(id: string, content: string): HistoryMatch | null {
-  const newId = updateTranscriptRecordContent(id, content);
-  if (!newId) {
+export function updateHistoryContent(
+  id: string,
+  content: string,
+  extra?: { type?: string; namespace?: string | null; title?: string | null; tags?: string[] }
+): HistoryMatch | null {
+  try {
+    const newId = updateTranscriptRecordContent(id, content, undefined, extra);
+    if (!newId) {
+      return null;
+    }
+
+    const record = findTranscriptRecordById(newId);
+    if (!record) {
+      return null;
+    }
+
+    const normalized = normalizeTranscriptRecord(record);
+    return {
+      id: normalized.id,
+      kind: "transcript",
+      ...(normalized.timestamp ? { timestamp: normalized.timestamp } : {}),
+      agent: normalized.sourceAgent,
+      recordKind: normalized.recordKind,
+      content: normalized.content ?? "",
+      type: normalized.type,
+      namespace: normalized.namespace ?? null,
+      title: normalized.title ?? null,
+      tags: normalized.tags ?? [],
+    };
+  } catch (error) {
+    console.error("Failed to update history content:", error);
     return null;
   }
-
-  const record = findTranscriptRecordById(newId);
-  if (!record) {
-    return null;
-  }
-
-  const normalized = normalizeTranscriptRecord(record);
-  return {
-    id: normalized.id,
-    kind: "transcript",
-    ...(normalized.timestamp ? { timestamp: normalized.timestamp } : {}),
-    agent: normalized.sourceAgent,
-    recordKind: normalized.recordKind,
-    content: normalized.content ?? "",
-  };
 }

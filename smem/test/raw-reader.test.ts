@@ -370,3 +370,64 @@ test("returns null when updating an unknown record id", () => {
   tempDirs.push(home);
   expect(updateTranscriptRecordContent("does-not-exist", "x", home)).toBeNull();
 });
+
+test("rawThread supports before options, count tracking, and ID query matching", () => {
+  const home = mkdtempSync(join(tmpdir(), "smem-raw-"));
+  tempDirs.push(home);
+  const transcriptPath = join(home, "transcript_before_after.jsonl");
+  mkdirSync(join(home, "events"), { recursive: true });
+  writeFileSync(
+    join(home, "events", "pending.jsonl"),
+    `${JSON.stringify({
+      eventId: "evt_test",
+      agent: "antigravity",
+      event: "PostInvocation",
+      captureKind: "raw-output",
+      transcriptPath,
+      payload: { transcriptPath }
+    })}\n`,
+    "utf8"
+  );
+  
+  const events = [
+    { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:00Z", content: "msg1 first" },
+    { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:01Z", content: "msg2 second" },
+    { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:02Z", content: "msg3 third target-keyword" },
+    { source: "MODEL", type: "PLANNER_RESPONSE", created_at: "2026-08-01T00:00:03Z", content: "msg4 fourth" },
+    { source: "USER_EXPLICIT", type: "USER_INPUT", created_at: "2026-08-01T00:00:04Z", content: "msg5 fifth" }
+  ];
+
+  writeFileSync(
+    transcriptPath,
+    events.map((event) => JSON.stringify(event)).join("\n"),
+    "utf8"
+  );
+
+  // Test keyword search with before and after options
+  const threadRes = rawThread({ home, query: "target-keyword", before: 2, after: 2 });
+  expect(threadRes.totalMatches).toBe(1);
+  expect(threadRes.anchor?.event["content"]).toContain("target-keyword");
+  
+  // Records should have before records, anchor, and after records
+  // We asked for before: 2 (msg1, msg2), anchor (msg3), after: 2 (msg4, msg5)
+  expect(threadRes.records).toHaveLength(5);
+  expect(threadRes.records[0]?.event["content"]).toBe("msg1 first");
+  expect(threadRes.records[1]?.event["content"]).toBe("msg2 second");
+  expect(threadRes.records[2]?.event["content"]).toContain("target-keyword");
+  expect(threadRes.records[3]?.event["content"]).toBe("msg4 fourth");
+  expect(threadRes.records[4]?.event["content"]).toBe("msg5 fifth");
+
+  // Test ID search
+  const anchorRecord = threadRes.anchor!;
+  const recordIdStr = transcriptRecordId(anchorRecord);
+  
+  // Search using the record ID directly
+  const idThreadRes = rawThread({ home, query: recordIdStr, before: 1, after: 1 });
+  expect(idThreadRes.totalMatches).toBe(1);
+  expect(idThreadRes.anchor).not.toBeNull();
+  expect(idThreadRes.anchor?.event["content"]).toContain("target-keyword");
+  expect(idThreadRes.records).toHaveLength(3);
+  expect(idThreadRes.records[0]?.event["content"]).toBe("msg2 second");
+  expect(idThreadRes.records[1]?.event["content"]).toContain("target-keyword");
+  expect(idThreadRes.records[2]?.event["content"]).toBe("msg4 fourth");
+});

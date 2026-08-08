@@ -11,8 +11,9 @@ export function printProject(project: ProjectRecord): string {
 }
 
 export function printMemory(memory: MemoryRecord): string {
+  const namespace = memory.namespace ? ` [ns:${memory.namespace}]` : "";
   const title = memory.title ? ` ${memory.title}` : "";
   const tags = memory.tags.length > 0 ? ` [${memory.tags.join(", ")}]` : "";
   const status = memory.status !== "active" ? ` (${memory.status})` : "";
-  return `${memory.id} ${memory.type}${status}${title}${tags}\n${memory.content}`;
+  return `${memory.id} ${memory.type}${status}${namespace}${title}${tags}\n${memory.content}`;
 }

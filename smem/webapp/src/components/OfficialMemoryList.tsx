@@ -26,6 +26,8 @@ function excerpt(content: string, max = 160): string {
 export default function OfficialMemoryList({ memories, scope, projectId }: Props) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  const [nsFilter, setNsFilter] = useState<string | null>(null)
   const [showAllStatuses, setShowAllStatuses] = useState(false)
 
   const visible = useMemo(
@@ -33,15 +35,40 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
     [memories, showAllStatuses]
   )
 
-  const typed = useMemo(
-    () => (typeFilter ? visible.filter((m) => m.type === typeFilter) : visible),
-    [visible, typeFilter]
+  const nsed = useMemo(
+    () => (nsFilter ? visible.filter((m) => m.namespace === nsFilter) : visible),
+    [visible, nsFilter]
   )
+
+  const typed = useMemo(
+    () => (typeFilter ? nsed.filter((m) => m.type === typeFilter) : nsed),
+    [nsed, typeFilter]
+  )
+
+  const tagged = useMemo(
+    () => (tagFilter ? typed.filter((m) => m.tags.includes(tagFilter)) : typed),
+    [typed, tagFilter]
+  )
+
+  const allTags = useMemo(() => {
+    const set = new Set<string>()
+    typed.forEach((m) => m.tags.forEach((t) => set.add(t)))
+    return [...set].sort()
+  }, [typed])
+
+  const allNamespaces = useMemo(() => {
+    const set = new Set<string>()
+    visible.forEach((m) => {
+      if (m.namespace) set.add(m.namespace)
+    })
+    return [...set].sort()
+  }, [visible])
 
   const fuse = useMemo(
     () =>
-      new Fuse(typed, {
+      new Fuse(tagged, {
         keys: [
+          { name: 'namespace', weight: 4 },
           { name: 'title', weight: 3 },
           { name: 'tags', weight: 2 },
           { name: 'content', weight: 1 },
@@ -50,10 +77,10 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
         ignoreLocation: true,
         minMatchCharLength: 2,
       }),
-    [typed]
+    [tagged]
   )
 
-  const results = query.trim() ? fuse.search(query).map((r) => r.item) : typed
+  const results = query.trim() ? fuse.search(query).map((r) => r.item) : tagged
 
   return (
     <div>
@@ -73,7 +100,7 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4 text-xs font-mono">
+      <div className="flex flex-wrap items-center gap-2 mb-2 text-xs font-mono">
         <button
           onClick={() => setTypeFilter(null)}
           className="px-2.5 py-1 rounded border"
@@ -103,6 +130,64 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
         </label>
       </div>
 
+      {allNamespaces.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-2 text-xs font-mono" style={{ borderTop: '1px dashed var(--border)', paddingTop: '8px' }}>
+          <span style={{ color: 'var(--muted)' }}>namespaces:</span>
+          <button
+            onClick={() => setNsFilter(null)}
+            className="px-2 py-0.5 rounded border"
+            style={{
+              borderColor: nsFilter === null ? 'var(--accent)' : 'var(--border)',
+              color: nsFilter === null ? 'var(--accent)' : 'var(--muted)',
+            }}
+          >
+            all
+          </button>
+          {allNamespaces.map((ns) => (
+            <button
+              key={ns}
+              onClick={() => setNsFilter(nsFilter === ns ? null : ns)}
+              className="px-2 py-0.5 rounded border"
+              style={{
+                borderColor: nsFilter === ns ? 'var(--accent)' : 'var(--border)',
+                color: nsFilter === ns ? 'var(--accent)' : 'var(--muted)',
+              }}
+            >
+              ns:{ns}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-4 text-xs font-mono" style={{ borderTop: '1px dashed var(--border)', paddingTop: '8px' }}>
+          <span style={{ color: 'var(--muted)' }}>tags:</span>
+          <button
+            onClick={() => setTagFilter(null)}
+            className="px-2 py-0.5 rounded border"
+            style={{
+              borderColor: tagFilter === null ? 'var(--accent)' : 'var(--border)',
+              color: tagFilter === null ? 'var(--accent)' : 'var(--muted)',
+            }}
+          >
+            all
+          </button>
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              onClick={() => setTagFilter(tagFilter === tag ? null : tag)}
+              className="px-2 py-0.5 rounded border"
+              style={{
+                borderColor: tagFilter === tag ? 'var(--accent)' : 'var(--border)',
+                color: tagFilter === tag ? 'var(--accent)' : 'var(--muted)',
+              }}
+            >
+              #{tag}
+            </button>
+          ))}
+        </div>
+      )}
+
       {results.length === 0 ? (
         <p className="text-sm py-8 text-center" style={{ color: 'var(--muted)' }}>
           No memories match.
@@ -120,6 +205,24 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
                   <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
                     {memory.type}
                   </span>
+                  {memory.namespace && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setNsFilter(nsFilter === memory.namespace ? null : (memory.namespace ?? null))
+                      }}
+                      className="text-xs font-mono px-1.5 py-0.5 rounded font-bold transition hover:border-accent"
+                      style={{
+                        background: 'var(--bg)',
+                        color: nsFilter === memory.namespace ? 'var(--accent)' : 'var(--text)',
+                        border: `1px solid ${nsFilter === memory.namespace ? 'var(--accent)' : 'var(--border)'}`,
+                      }}
+                    >
+                      ns:{memory.namespace}
+                    </button>
+                  )}
                   {memory.status !== 'active' && (
                     <span className="text-xs font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--muted)', border: '1px solid var(--border)' }}>
                       {memory.status}
@@ -133,9 +236,23 @@ export default function OfficialMemoryList({ memories, scope, projectId }: Props
                 {memory.tags.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {memory.tags.map((tag) => (
-                      <span key={tag} className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'var(--bg)', color: 'var(--muted)', border: '1px solid var(--border)' }}>
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setTagFilter(tagFilter === tag ? null : tag)
+                        }}
+                        className="text-[10px] font-mono px-1.5 py-0.5 rounded transition hover:border-accent"
+                        style={{
+                          background: 'var(--bg)',
+                          color: tagFilter === tag ? 'var(--accent)' : 'var(--muted)',
+                          border: `1px solid ${tagFilter === tag ? 'var(--accent)' : 'var(--border)'}`,
+                        }}
+                      >
                         #{tag}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 )}
