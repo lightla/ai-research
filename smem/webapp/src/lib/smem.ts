@@ -118,13 +118,15 @@ export type HistoryMatch = {
 // instead of requiring a search term, so the panel can be browsed like a normal list.
 export function searchHistory(
   query: string,
-  options: { projectPath?: string; limit?: number; offset?: number } = {}
+  options: { projectPath?: string; limit?: number; offset?: number; agent?: string; kind?: string } = {}
 ): HistoryMatch[] {
   const records = searchReferencedTranscripts({
     query,
     limit: options.limit ?? 20,
     offset: options.offset ?? 0,
     ...(options.projectPath ? { projectPath: options.projectPath } : {}),
+    ...(options.agent ? { agent: options.agent } : {}),
+    ...(options.kind ? { kind: options.kind } : {}),
   });
 
   return records.map((record) => {

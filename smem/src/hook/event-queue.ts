@@ -5,6 +5,7 @@ import type { LlmClassification } from "../classify/llm-classifier";
 import { createEventId } from "../core/ids";
 import { defaultSmartMemoryHome } from "../core/paths";
 import type { AgentName } from "../install/agent-installer";
+import { redactJsonValue } from "./redact";
 
 export type HookEventInput = Record<string, unknown>;
 
@@ -38,8 +39,8 @@ export function appendHookEvent(options: {
   input: HookEventInput;
   home?: string;
 }): NormalizedHookEvent {
-  const event = normalizeHookEvent(options.agent, options.input, options.eventOverride);
   const home = options.home ?? defaultSmartMemoryHome();
+  const event = normalizeHookEvent(options.agent, options.input, options.eventOverride, home);
   const queueDir = join(home, "events");
   mkdirSync(queueDir, { recursive: true });
   appendFileSync(join(queueDir, "pending.jsonl"), `${JSON.stringify(event)}\n`, "utf8");
@@ -48,14 +49,20 @@ export function appendHookEvent(options: {
 
 function normalizeHookEvent(
   agent: AgentName,
-  input: HookEventInput,
-  eventOverride: string | undefined
+  rawInput: HookEventInput,
+  eventOverride: string | undefined,
+  home: string
 ): NormalizedHookEvent {
+  // Redact before anything else touches this payload: it gets written verbatim to
+  // pending.jsonl (read back by `smem raw`/`smem history`), classified (extracted
+  // keywords/entities land in candidate memory tags), and optionally sent to an LLM
+  // classifier — a leaked API key in a captured bash command must not survive any of that.
+  const input = redactJsonValue(rawInput);
   const event = eventOverride ?? stringField(input, "hook_event_name") ?? stringField(input, "hookEventName") ?? "unknown";
   const projectPath = projectPathForAgent(agent, input);
   const transcriptPath = stringField(input, "transcript_path") ?? stringField(input, "transcriptPath");
   const turnId = stringField(input, "turn_id");
-  const classification = classifyText(textForClassification(input));
+  const classification = classifyText(textForClassification(input), home);
 
   return {
     eventId: createEventId(),

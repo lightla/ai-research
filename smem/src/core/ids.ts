@@ -12,6 +12,14 @@ export function createEventId(): string {
   return `evt_${createSortableBase58Id()}`;
 }
 
+export function createEntityId(): string {
+  return `ent_${createSortableBase58Id()}`;
+}
+
+export function createRelationId(): string {
+  return `rel_${createSortableBase58Id()}`;
+}
+
 export function createSortableBase58Id(now = Date.now()): string {
   const bytes = new Uint8Array(16);
   let timestamp = BigInt(now);

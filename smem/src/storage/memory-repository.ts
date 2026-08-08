@@ -1,7 +1,8 @@
 import { join } from "node:path";
+import { extractDecisionComponents, findOverlappingDecisions, type DecisionOverlap } from "../classify/decision-intel";
 import { createMemoryId } from "../core/ids";
 import { defaultSmartMemoryHome } from "../core/paths";
-import type { MemoryInput, MemoryRecord, ProjectRecord } from "../core/schema";
+import type { DecisionComponents, MemoryInput, MemoryRecord, ProjectRecord } from "../core/schema";
 import { MemoryInputSchema } from "../core/schema";
 import { rankMemories, type RecallOptions, type RecallResult } from "../retrieval/retrieval";
 import { openMemoryDb, type SqliteDatabase } from "./db";
@@ -19,6 +20,8 @@ type MemoryRow = {
   source_kind: string;
   source_agent: string | null;
   source_json: string;
+  decision_json: string | null;
+  superseded_by: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -56,6 +59,11 @@ export class MemoryRepository {
   create(input: MemoryInput, options: CreateMemoryOptions = {}): MemoryRecord {
     const parsed = MemoryInputSchema.parse(input);
     const now = new Date().toISOString();
+    // Explicit decision fields (--chosen/--rejected/--reason) win; otherwise try to regex-extract
+    // {chosen, rejectedAlternatives, reasoning} from the content itself. See decision-intel.ts —
+    // this never calls an LLM and returns null (no field, not an error) when nothing matches.
+    const decision =
+      parsed.decision ?? (parsed.type === "decision" ? extractDecisionComponents(parsed.content) ?? undefined : undefined);
     const record: MemoryRecord = {
       id: createMemoryId(),
       projectId: this.projectIdForScope(),
@@ -69,6 +77,7 @@ export class MemoryRepository {
       sourceKind: options.sourceKind ?? "manual",
       ...(options.sourceAgent ? { sourceAgent: options.sourceAgent } : {}),
       source: options.source ?? {},
+      ...(decision ? { decision } : {}),
       createdAt: now,
       updatedAt: now
     };
@@ -76,9 +85,9 @@ export class MemoryRepository {
     this.db
       .prepare(
         `INSERT INTO memories
-          (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
+          (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, decision_json, superseded_by, created_at, updated_at)
          VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         record.id,
@@ -93,11 +102,62 @@ export class MemoryRepository {
         record.sourceKind,
         record.sourceAgent ?? null,
         JSON.stringify(record.source),
+        record.decision ? JSON.stringify(record.decision) : null,
+        null,
         record.createdAt,
         record.updatedAt
       );
 
     return record;
+  }
+
+  /**
+   * Prior *active* decision memories that a new decision's {chosen, rejectedAlternatives} and
+   * tags overlap with, above `threshold`. Call this after `create()` for type="decision" — it
+   * never runs automatically and never marks anything itself; `smem store` surfaces the result
+   * for a human to act on with `supersede`, matching the "no silent merge" rule the rest of
+   * smem's merge/entity flows already follow.
+   */
+  findDecisionOverlaps(
+    components: DecisionComponents,
+    tags: string[],
+    options: { excludeId?: string; limit?: number; threshold?: number } = {}
+  ): DecisionOverlap[] {
+    const existing = this.byType("decision", 200).filter((memory) => memory.id !== options.excludeId);
+    return findOverlappingDecisions(components, tags, existing, options);
+  }
+
+  /**
+   * Mark `oldId` as superseded by `newId`. Both must be active memories in this scope. This is
+   * the only place `status` becomes "superseded" or `supersededBy` gets set — always an explicit
+   * human action (`smem supersede`), never inferred from `findDecisionOverlaps` alone.
+   */
+  supersede(oldId: string, newId: string): MemoryRecord {
+    if (oldId === newId) {
+      throw new Error("A memory cannot supersede itself.");
+    }
+    const old = this.getById(oldId);
+    if (!old) {
+      throw new Error(`Memory not found: ${oldId}`);
+    }
+    if (old.status !== "active") {
+      throw new Error(`Only active memories can be superseded: ${oldId} (status: ${old.status})`);
+    }
+    const replacement = this.getById(newId);
+    if (!replacement) {
+      throw new Error(`Replacement memory not found: ${newId}`);
+    }
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE memories
+         SET status = 'superseded', superseded_by = ?, updated_at = ?
+         WHERE id = ? AND project_id = ? AND scope = ? AND status = 'active'`
+      )
+      .run(newId, now, oldId, this.projectIdForScope(), this.scope);
+
+    return this.getById(oldId)!;
   }
 
   list(limit = 20): MemoryRecord[] {
@@ -371,12 +431,12 @@ export class MemoryRepository {
     let skipped = 0;
     const insert = this.db.prepare(
       `INSERT INTO memories
-        (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, project_id, scope, type, namespace, title, content, tags_json, status, source_kind, source_agent, source_json, decision_json, superseded_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const replace = this.db.prepare(
       `UPDATE memories
-       SET type = ?, namespace = ?, title = ?, content = ?, tags_json = ?, status = ?, source_kind = ?, source_agent = ?, source_json = ?, created_at = ?, updated_at = ?
+       SET type = ?, namespace = ?, title = ?, content = ?, tags_json = ?, status = ?, source_kind = ?, source_agent = ?, source_json = ?, decision_json = ?, superseded_by = ?, created_at = ?, updated_at = ?
        WHERE id = ? AND project_id = ? AND scope = ?`
     );
 
@@ -399,6 +459,8 @@ export class MemoryRepository {
             record.sourceKind,
             record.sourceAgent ?? null,
             JSON.stringify(record.source),
+            record.decision ? JSON.stringify(record.decision) : null,
+            record.supersededBy ?? null,
             record.createdAt,
             record.updatedAt,
             record.id,
@@ -419,6 +481,8 @@ export class MemoryRepository {
             record.sourceKind,
             record.sourceAgent ?? null,
             JSON.stringify(record.source),
+            record.decision ? JSON.stringify(record.decision) : null,
+            record.supersededBy ?? null,
             record.createdAt,
             record.updatedAt
           );
@@ -538,6 +602,8 @@ export class MemoryRepository {
       sourceKind: row.source_kind,
       ...(row.source_agent ? { sourceAgent: row.source_agent } : {}),
       source: JSON.parse(row.source_json || "{}") as Record<string, unknown>,
+      ...(row.decision_json ? { decision: JSON.parse(row.decision_json) as DecisionComponents } : {}),
+      ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };

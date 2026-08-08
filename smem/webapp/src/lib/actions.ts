@@ -63,10 +63,11 @@ export async function searchHistoryAction(
   query: string,
   scope: Scope,
   projectId: string | null,
-  offset = 0
+  offset = 0,
+  filters: { agent?: string; kind?: string } = {}
 ): Promise<HistoryMatch[]> {
   const projectPath = scope === 'local' && projectId ? getProject(projectId)?.rootPath : undefined
-  return searchHistory(query, { projectPath, offset })
+  return searchHistory(query, { projectPath, offset, ...filters })
 }
 
 export async function deleteHistoryAction(kind: 'event' | 'transcript', id: string): Promise<boolean> {

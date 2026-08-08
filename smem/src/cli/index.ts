@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
-import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -15,10 +15,12 @@ process.on("warning", (warning) => {
 });
 
 import { Command } from "commander";
-import { MemoryInputSchema, MemoryTypeSchema } from "../core/schema";
+import { EntityTypeSchema, MemoryInputSchema, MemoryTypeSchema, RelationTypeSchema } from "../core/schema";
 import { RegistryRepository } from "../storage/registry-repository";
 import { MemoryRepository } from "../storage/memory-repository";
+import { GraphRepository } from "../storage/graph-repository";
 import { writeMarkdownRender } from "../render/markdown";
+import { parseMarkdownImport } from "../render/markdown-import";
 import { readGuide } from "../guide/guide";
 import {
   installAgents,
@@ -31,6 +33,11 @@ import {
 import { runHook } from "../hook/hook-runner";
 import { classifyText } from "../classify/offline-classifier";
 import { classifyWithLlm } from "../classify/llm-classifier";
+import { addLexiconWord, loadLexicon, parseLexiconCategory, removeLexiconWord, resetLexicon } from "../classify/lexicon";
+import { dismissLexiconSuggestion, listLexiconSuggestions, recordPromotionSignal } from "../classify/lexicon-learning";
+import { logCommandInvocation, mineCommandHabits } from "../classify/habit-mining";
+import { logRecallQuery, mineQueryPatterns, suggestRelatedTopics } from "../classify/query-pattern-mining";
+import { extractKeywords } from "../classify/keywords";
 import {
   DEFAULT_CONFIG,
   coerceConfigValue,
@@ -63,7 +70,7 @@ import {
   summarizeRawEvent,
   summarizeTranscriptRecord
 } from "../raw/raw-reader";
-import { printMemory, printProject } from "./format";
+import { printDecisionOverlaps, printEntity, printFocus, printMacroGraph, printMemory, printProject, printRelation } from "./format";
 import { stopWeb, webStatus, writeWebMetadata } from "../web/web-daemon";
 
 const program = new Command();
@@ -72,6 +79,27 @@ program
   .name("smem")
   .description("Smart Memory CLI core MVP")
   .version("0.1.0");
+
+// Logs every successful command invocation for `smem habits` to mine — a single hook here
+// instead of touching each action handler. `postAction` (not `preAction`) so a command that
+// throws doesn't get logged as if it succeeded. Runs for every command including subcommands
+// (`lexicon add`, `entity add`, ...); `fullCommandPath` walks up to build "lexicon add" instead
+// of just "add". This never calls an LLM — see habit-mining.ts for why frequency alone is enough.
+program.hook("postAction", (_thisCommand, actionCommand) => {
+  try {
+    logCommandInvocation(fullCommandPath(actionCommand));
+  } catch {
+    // Habit logging is best-effort; it must never fail a command that otherwise succeeded.
+  }
+});
+
+function fullCommandPath(command: Command): string {
+  const parts: string[] = [];
+  for (let current: Command | null = command; current && current.name() !== "smem"; current = current.parent) {
+    parts.unshift(current.name());
+  }
+  return parts.join(" ");
+}
 
 program
   .command("guide")
@@ -295,6 +323,143 @@ function unknownConfigKeyMessage(key: string): string {
   return `Unknown config key "${key}". Known keys: classifier, model, base-url, api-key, timeout-ms.`;
 }
 
+const lexiconCmd = program
+  .command("lexicon")
+  .description("Inspect and edit the offline classifier's trigger-word dictionary (decision/todo/preference/error/question/context)")
+  .action(() => {
+    const lexicon = loadLexicon();
+    console.log(printLexicon(lexicon));
+  });
+
+lexiconCmd
+  .command("list")
+  .description("List active trigger words, optionally for one category")
+  .argument("[category]", "decision, todo, preference, error, question, or context")
+  .action((category?: string) => {
+    const lexicon = loadLexicon();
+    console.log(printLexicon(lexicon, category ? parseLexiconCategory(category) : undefined));
+  });
+
+lexiconCmd
+  .command("add")
+  .description("Add a trigger word to a category")
+  .argument("<category>", "decision, todo, preference, error, question, or context")
+  .argument("<word...>", "Word or short phrase to add")
+  .action((category: string, wordParts: string[]) => {
+    const parsedCategory = parseLexiconCategory(category);
+    const lexicon = addLexiconWord(parsedCategory, wordParts.join(" "));
+    console.log(printLexicon(lexicon, parsedCategory));
+  });
+
+lexiconCmd
+  .command("remove")
+  .description("Remove a trigger word from a category")
+  .argument("<category>", "decision, todo, preference, error, question, or context")
+  .argument("<word...>", "Word or short phrase to remove")
+  .action((category: string, wordParts: string[]) => {
+    const parsedCategory = parseLexiconCategory(category);
+    const lexicon = removeLexiconWord(parsedCategory, wordParts.join(" "));
+    console.log(printLexicon(lexicon, parsedCategory));
+  });
+
+lexiconCmd
+  .command("reset")
+  .description("Reset the lexicon to its built-in defaults, discarding learned/added words")
+  .action(() => {
+    resetLexicon();
+    console.log("smem: lexicon reset to defaults.");
+  });
+
+lexiconCmd
+  .command("suggest")
+  .description("Show words that keep showing up in promoted memories without matching any current trigger word")
+  .option("--min-count <n>", "Minimum raw occurrence count before a word is suggested", parseInteger, 3)
+  .option("--min-ratio <n>", "Minimum share of that category's confirmations the word must appear in (0-1)", parseRatio, 0.15)
+  .action((options: { minCount: number; minRatio: number }) => {
+    const suggestions = listLexiconSuggestions(undefined, { minCount: options.minCount, minRatio: options.minRatio });
+    if (suggestions.length === 0) {
+      console.log(
+        "No suggestions yet. Suggestions appear once a word shows up in enough promoted memories, relative to how many of that type have been confirmed, that no current trigger word explains."
+      );
+      return;
+    }
+    console.log(
+      suggestions
+        .map(
+          (s) =>
+            `${s.category} "${s.word}" — ${s.count}/${s.total} promoted memories not yet explained by the lexicon (${(s.ratio * 100).toFixed(0)}%)`
+        )
+        .join("\n")
+    );
+    console.log("\nAdd one with: smem lexicon add <category> <word>");
+    console.log("Or dismiss without adding: smem lexicon dismiss <category> <word>");
+  });
+
+lexiconCmd
+  .command("dismiss")
+  .description("Clear a suggestion's counter without adding it to the lexicon")
+  .argument("<category>", "decision, todo, preference, error, question, or context")
+  .argument("<word...>", "Suggested word or phrase to dismiss")
+  .action((category: string, wordParts: string[]) => {
+    const parsedCategory = parseLexiconCategory(category);
+    dismissLexiconSuggestion(parsedCategory, wordParts.join(" "));
+    console.log(`smem: dismissed suggestion "${wordParts.join(" ")}" for ${parsedCategory}.`);
+  });
+
+function printLexicon(lexicon: ReturnType<typeof loadLexicon>, only?: ReturnType<typeof parseLexiconCategory>): string {
+  const categories = only ? [only] : (Object.keys(lexicon) as Array<keyof typeof lexicon>);
+  return categories.map((category) => `${category}: ${lexicon[category].join(", ") || "(empty)"}`).join("\n");
+}
+
+program
+  .command("habits")
+  .description("Show command sequences you run often, mined from your own smem command history (0 LLM)")
+  .option("--window-seconds <n>", "Max gap between two commands to count as one sequence", parseInteger, 300)
+  .option("--min-count <n>", "Minimum raw occurrence count before a sequence is surfaced", parseInteger, 3)
+  .option("--min-ratio <n>", "Minimum share of all observed sequences the pair must account for (0-1)", parseRatio, 0.1)
+  .action((options: { windowSeconds: number; minCount: number; minRatio: number }) => {
+    const habits = mineCommandHabits(undefined, {
+      windowSeconds: options.windowSeconds,
+      minCount: options.minCount,
+      minRatio: options.minRatio
+    });
+    if (habits.length === 0) {
+      console.log("No habits detected yet. This mines your own `smem` command history — nothing to see until there's enough of it.");
+      return;
+    }
+    console.log(
+      habits
+        .map(
+          (h) =>
+            `smem ${h.steps[0]} -> smem ${h.steps[1]}  (${h.count}/${h.totalPairs} sequences, ${(h.ratio * 100).toFixed(0)}%, avg gap ${h.avgGapSeconds.toFixed(0)}s)`
+        )
+        .join("\n")
+    );
+  });
+
+program
+  .command("query-patterns")
+  .description("Show topic pairs learned from your own `smem recall` history (0 LLM)")
+  .option("--window-seconds <n>", "Max gap between two recalls to count as one sequence", parseInteger, 1800)
+  .option("--min-count <n>", "Minimum raw occurrence count before a pair is surfaced", parseInteger, 3)
+  .option("--min-ratio <n>", "Minimum share of all observed pairs the topic pair must account for (0-1)", parseRatio, 0.1)
+  .action((options: { windowSeconds: number; minCount: number; minRatio: number }) => {
+    const patterns = mineQueryPatterns(undefined, {
+      windowSeconds: options.windowSeconds,
+      minCount: options.minCount,
+      minRatio: options.minRatio
+    });
+    if (patterns.length === 0) {
+      console.log("No query patterns detected yet. This mines your own `smem recall` history — nothing to see until there's enough of it.");
+      return;
+    }
+    console.log(
+      patterns
+        .map((p) => `"${p.topics[0]}" -> "${p.topics[1]}"  (${p.count}/${p.totalPairs} pairs, ${(p.ratio * 100).toFixed(0)}%)`)
+        .join("\n")
+    );
+  });
+
 program
   .command("init")
   .description("Create or reuse an outsider Smart Memory project for the current directory")
@@ -391,12 +556,29 @@ program
   .option("--tags <tags>", "Comma-separated tags")
   .option("--tag <tag>", "Single tag; can be repeated", collectOption, [])
   .option("--scope <scope>", "Memory scope: local or global", "local")
+  .option("--chosen <choice>", "Decision only: what was chosen (skips regex extraction from content)")
+  .option("--rejected <alternative>", "Decision only: a rejected alternative; can be repeated", collectOption, [])
+  .option("--reason <reason>", "Decision only: why (pairs with --chosen)")
   .argument("<content...>", "Memory content")
   .action(
-    (contentParts: string[], options: { type: string; namespace?: string; title?: string; tags?: string; tag: string[]; scope: string }) => {
+    (
+      contentParts: string[],
+      options: {
+        type: string;
+        namespace?: string;
+        title?: string;
+        tags?: string;
+        tag: string[];
+        scope: string;
+        chosen?: string;
+        rejected: string[];
+        reason?: string;
+      }
+    ) => {
     const type = MemoryTypeSchema.parse(options.type);
     const scope = parseScope(options.scope);
     const content = contentParts.join(" ").trim();
+    const tags = parseTags(options.tags, options.tag);
 
     withMemoryRepository(scope, (repo) => {
       const input = MemoryInputSchema.parse({
@@ -404,13 +586,46 @@ program
         namespace: options.namespace ?? null,
         ...(options.title ? { title: options.title } : {}),
         content,
-        tags: parseTags(options.tags, options.tag)
+        tags,
+        ...(options.chosen || options.rejected.length > 0 || options.reason
+          ? {
+              decision: {
+                ...(options.chosen ? { chosen: options.chosen } : {}),
+                rejectedAlternatives: options.rejected,
+                ...(options.reason ? { reasoning: options.reason } : {})
+              }
+            }
+          : {})
       });
       const memory = repo.create(input);
       console.log(printMemory(memory));
+      // Explicit `smem store --type X` is a human confirming this content is type X directly —
+      // at least as strong a signal as a promote, so it feeds the same lexicon-learning counter.
+      if (memory.status === "active") {
+        recordPromotionSignal(memory);
+      }
+      if (memory.type === "decision" && memory.decision && memory.status === "active") {
+        const overlaps = repo.findDecisionOverlaps(memory.decision, tags, { excludeId: memory.id });
+        if (overlaps.length > 0) {
+          console.log("");
+          console.log(printDecisionOverlaps(overlaps));
+        }
+      }
     });
     }
   );
+
+program
+  .command("supersede")
+  .description("Mark an active decision memory as superseded by another one")
+  .argument("<old-id>", "Memory id being replaced")
+  .requiredOption("--by <new-id>", "Memory id that replaces it")
+  .option("--scope <scope>", "Memory scope: local or global", "local")
+  .action((oldId: string, options: { by: string; scope: string }) => {
+    withMemoryRepository(parseScope(options.scope), (repo) => {
+      console.log(printMemory(repo.supersede(oldId, options.by)));
+    });
+  });
 
 program
   .command("list")
@@ -540,6 +755,61 @@ program
   });
 
 program
+  .command("feed <file>")
+  .description("Import memory records from an agent-authored markdown file — run `smem guide` for the exact format")
+  .option("--scope <scope>", "Default scope for records that don't set their own via a `scope:` metadata line", "local")
+  .option("--pending-review", "Create records as pending-review instead of active")
+  .action((file: string, options: { scope: string; pendingReview?: boolean }) => {
+    const defaultScope = parseScope(options.scope);
+    const markdown = readFileSync(resolve(file), "utf8");
+    const { records, skippedEmpty } = parseMarkdownImport(markdown);
+
+    if (records.length === 0) {
+      console.log(
+        skippedEmpty > 0
+          ? `No records created — found ${skippedEmpty} heading(s) with no content. Run \`smem guide\` for the expected markdown structure.`
+          : 'No "## " headings found. Run `smem guide` for the expected markdown structure.'
+      );
+      return;
+    }
+
+    withCurrentProject((project) => {
+      const repos = new Map<"local" | "global", MemoryRepository>();
+      const repoFor = (scope: "local" | "global"): MemoryRepository => {
+        const existing = repos.get(scope);
+        if (existing) {
+          return existing;
+        }
+        const created = new MemoryRepository(project, { scope });
+        repos.set(scope, created);
+        return created;
+      };
+
+      try {
+        const createdMemories = records.map((record) => {
+          const scope = record.scope ?? defaultScope;
+          const memory = repoFor(scope).create(record.input, options.pendingReview ? { status: "pending-review" } : {});
+          if (memory.status === "active") {
+            // An agent writing this file and a user explicitly running `smem feed` on it is at
+            // least as strong a confirmation signal as `smem store` — feed the same lexicon.
+            recordPromotionSignal(memory);
+          }
+          return memory;
+        });
+
+        console.log(createdMemories.map(printMemory).join("\n\n"));
+        console.log("");
+        const skippedNote = skippedEmpty > 0 ? `, skipped ${skippedEmpty} empty heading(s)` : "";
+        console.log(`Created ${createdMemories.length} memor${createdMemories.length === 1 ? "y" : "ies"}${skippedNote}.`);
+      } finally {
+        for (const repo of repos.values()) {
+          repo.close();
+        }
+      }
+    });
+  });
+
+program
   .command("scan")
   .description("Rebuild registry mappings from outsider project stores")
   .requiredOption("--store <path>", "Project store or directory containing project stores")
@@ -631,6 +901,22 @@ program
           ? results.map((result) => formatRecallResult(result, options)).join("\n")
           : "No matching memories."
       );
+
+      // Best-effort query-pattern learning — never blocks or fails the recall itself.
+      try {
+        logRecallQuery(query);
+        if (!options.compact) {
+          const currentTopics = extractKeywords(query, 2, 6).filter((topic) => !topic.includes(" "));
+          const related = suggestRelatedTopics(currentTopics);
+          if (related.length > 0) {
+            console.log(
+              `\nRelated searches (from your own recall history): ${related.map((r) => `"${r.topic}"`).join(", ")}`
+            );
+          }
+        }
+      } catch {
+        // Learning is a side effect of recall, not part of its contract.
+      }
     }
   );
 
@@ -922,7 +1208,11 @@ program
   .option("--scope <scope>", "Memory scope: local or global", "local")
   .action((id: string, options: { scope: string }) => {
     withMemoryRepository(parseScope(options.scope), (repo) => {
-      console.log(printMemory(repo.promote(id)));
+      const promoted = repo.promote(id);
+      console.log(printMemory(promoted));
+      // A human just confirmed this content belongs to `promoted.type` — if none of the
+      // current lexicon words explain that, count its keywords as a lexicon-learning signal.
+      recordPromotionSignal(promoted);
     });
   });
 
@@ -947,6 +1237,110 @@ program
     withMemoryRepository(parseScope(options.scope), (repo) => {
       const context = repo.context({ limit: options.limit, maxChars: options.maxChars });
       console.log(context || "No context memories found.");
+    });
+  });
+
+const entity = program
+  .command("entity")
+  .description("Manage domain-graph entities: modules, domain objects, decisions, and constraints");
+
+entity
+  .command("add")
+  .description("Create a graph entity, or update its description/code-ref if the name already exists")
+  .requiredOption("--type <type>", "Entity type: module, domain_object, decision, or constraint")
+  .requiredOption("--name <name>", "Entity name")
+  .option("--description <text>", "Short description")
+  .option(
+    "--code-ref <path>",
+    "Breadcrumb path into the codebase; not indexed or parsed, just a pointer for the agent's own Read/Grep when it needs class/file-level detail"
+  )
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((options: { type: string; name: string; description?: string; codeRef?: string; scope: string }) => {
+    const type = EntityTypeSchema.parse(options.type);
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      const record = graph.upsertEntity({
+        type,
+        name: options.name,
+        ...(options.description ? { description: options.description } : {}),
+        ...(options.codeRef ? { codeRef: options.codeRef } : {})
+      });
+      console.log(printEntity(record));
+    });
+  });
+
+entity
+  .command("list")
+  .description("List graph entities")
+  .option("--type <type>", "Filter by entity type: module, domain_object, decision, or constraint")
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((options: { type?: string; scope: string }) => {
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      const type = options.type ? EntityTypeSchema.parse(options.type) : undefined;
+      const entities = graph.listEntities(type ? { type } : {});
+      console.log(entities.length > 0 ? entities.map(printEntity).join("\n\n") : "No entities found.");
+    });
+  });
+
+entity
+  .command("show <slug>")
+  .description("Show one entity by slug")
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((slug: string, options: { scope: string }) => {
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      const record = graph.getBySlug(slug);
+      if (!record) {
+        throw new Error(`Entity not found: ${slug}`);
+      }
+      console.log(printEntity(record));
+    });
+  });
+
+program
+  .command("relate")
+  .description("Record a typed relation between two existing entities")
+  .requiredOption("--from <entity>", "Source entity name or slug (must already exist)")
+  .requiredOption("--to <entity>", "Target entity name or slug (must already exist)")
+  .requiredOption(
+    "--type <type>",
+    "Relation type: DEPENDS_ON, CONTAINS, COMMUNICATES_VIA, IMPACTS, RESOLVES, or REFERENCES"
+  )
+  .option("--detail <text>", "Extra detail shown only on `smem focus`, kept out of the macro `smem graph` view")
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((options: { from: string; to: string; type: string; detail?: string; scope: string }) => {
+    const type = RelationTypeSchema.parse(options.type);
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      const relation = graph.createRelation({
+        fromEntity: options.from,
+        toEntity: options.to,
+        type,
+        ...(options.detail ? { detail: options.detail } : {})
+      });
+      const view = graph.listRelations({ entityId: relation.fromEntityId }).find((candidate) => candidate.id === relation.id);
+      console.log(view ? printRelation(view, { detail: true }) : `${relation.id} ${relation.type}`);
+    });
+  });
+
+program
+  .command("graph")
+  .description("Show the macro domain graph: modules, decisions, constraints, and how they relate (big picture, no detail)")
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((options: { scope: string }) => {
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      console.log(printMacroGraph(graph.macroGraph()));
+    });
+  });
+
+program
+  .command("focus <slug>")
+  .description("Zoom into one entity: its full relation detail and what it directly contains")
+  .option("--scope <scope>", "Entity scope: local or global", "local")
+  .action((slug: string, options: { scope: string }) => {
+    withGraphRepository(parseScope(options.scope), (graph) => {
+      const result = graph.focus(slug);
+      if (!result) {
+        throw new Error(`Entity not found: ${slug}`);
+      }
+      console.log(printFocus(result));
     });
   });
 
@@ -1105,6 +1499,17 @@ function withMemoryRepository<T>(scope: "local" | "global", fn: (repo: MemoryRep
   });
 }
 
+function withGraphRepository<T>(scope: "local" | "global", fn: (repo: GraphRepository) => T): T {
+  return withCurrentProject((project) => {
+    const repo = new GraphRepository(project, { scope });
+    try {
+      return fn(repo);
+    } finally {
+      repo.close();
+    }
+  });
+}
+
 async function withMemoryRepositoryAsync<T>(
   scope: "local" | "global",
   fn: (repo: MemoryRepository, project: ReturnType<RegistryRepository["requireCurrentProject"]>) => Promise<T>
@@ -1158,6 +1563,14 @@ function parsePositiveNumber(value: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`Invalid positive number: ${value}`);
+  }
+  return parsed;
+}
+
+function parseRatio(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`Invalid ratio: ${value}. Expected a number between 0 and 1.`);
   }
   return parsed;
 }

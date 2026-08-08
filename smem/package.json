@@ -1,16 +1,22 @@
 {
-  "name": "smem",
+  "name": "smart-memory",
   "version": "0.1.0",
   "description": "Smart Memory CLI core MVP",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "commonjs",
   "main": "./dist/cli/index.js",
   "bin": {
     "smem": "./dist/cli/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lightla/ai-research.git",
+    "directory": "smem"
+  },
   "files": [
     "dist",
     "README.md",
+    "LICENSE",
     "package.json"
   ],
   "scripts": {
@@ -18,7 +24,7 @@
     "clean": "node scripts/clean-dist.mjs",
     "dev": "tsx src/cli/index.ts",
     "install:global": "npm run build && npm install -g .",
-    "uninstall:global": "npm uninstall -g smem",
+    "uninstall:global": "npm uninstall -g smart-memory",
     "install:script": "sh ./install.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -26,8 +32,6 @@
   },
   "dependencies": {
     "commander": "^14.0.2",
-    "wink-eng-lite-web-model": "^1.8.1",
-    "wink-nlp": "^2.4.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
@@ -37,6 +41,6 @@
     "vitest": "^4.0.15"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=22.13.0"
   }
 }

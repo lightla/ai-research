@@ -1,11 +1,6 @@
-import winkNLP from "wink-nlp";
-import model from "wink-eng-lite-web-model";
-
-// wink-nlp exposes `its` as a CommonJS helper with package-specific function types.
-// Keep the loose boundary local to this adapter.
-const its = require("wink-nlp/src/its.js") as any;
-
-const nlp = winkNLP(model);
+import { detectVietnamese, extractEntities, extractKeywords } from "./keywords";
+import { buildLexiconPattern, isLexiconCategory, loadLexicon } from "./lexicon";
+import { defaultSmartMemoryHome } from "../core/paths";
 
 export type ClassifierKind = "smem-rule" | "wink-nlp" | "llm";
 
@@ -27,103 +22,42 @@ export type OfflineClassification = {
   entities: string[];
   languageHint: "mixed" | "en" | "unknown";
   classifier: {
-    kind: "wink-nlp";
+    kind: "smem-rule";
     version: string;
     confidence: number;
   };
 };
 
-const VERSION = "wink-nlp@2.4.0+wink-eng-lite-web-model@1.8.1";
+// Pure regex/heuristic, no POS tagger, no ML model — see keywords.ts for why: a
+// statistical English model (this used to be wink-nlp) mistags Vietnamese syllables and
+// shreds compounds like "phụ thuộc" into garbage fragments ("thu", "vào" survive as
+// "keywords" while the actual content word "thuộc" is dropped). Bilingual by construction
+// instead, at the cost of being "basic rules" rather than a trained model.
+const VERSION = "smem-rule@1.1.0";
 
-const LABEL_RULES: Array<{ label: OfflineLabel; patterns: RegExp[] }> = [
-  {
-    label: "decision",
-    patterns: [
-      /\b(decide|decision|choose|chosen|approved|reject|rejected)\b/i,
-      /\b(chốt|quyết định|lựa chọn|chot|quyet dinh|lua chon)\b/i
-    ]
-  },
-  {
-    label: "todo",
-    patterns: [
-      /\b(todo|open loop|follow[- ]?up|pending|next step)\b/i,
-      /\b(cần làm|việc còn|chưa xong|bước tiếp|can lam|viec con|chua xong|buoc tiep)\b/i
-    ]
-  },
-  {
-    label: "preference",
-    patterns: [
-      /\b(prefer|preference|from now on|always use|never use|convention)\b/i,
-      /\b(từ nay|quy ước|ưu tiên|tu nay|quy uoc|uu tien)\b/i
-    ]
-  },
-  {
-    label: "error",
-    patterns: [/\b(error|failed|failure|exception|stack trace|crash|bug)\b/i, /\b(lỗi|fail|hỏng|loi|hong)\b/i]
-  },
-  {
-    label: "question",
-    patterns: [
-      /\?$/,
-      /\b(why|what|how|when|where|should|can we)\b/i,
-      /\b(tại sao|như nào|làm sao|có nên|tai sao|nhu nao|lam sao|co nen)\b/i
-    ]
-  },
-  {
-    label: "command",
-    patterns: [/^\s*(smem|npm|pnpm|node|git|curl|bash|sh|python|codex|claude)\b/i, /^\s*\/[a-z][\w-]*/i]
-  },
-  {
-    label: "context",
-    patterns: [
-      /\b(context|architecture|design|rationale|because|constraint)\b/i,
-      /\b(ngữ cảnh|kiến trúc|thiết kế|lý do|ràng buộc|ngu canh|kien truc|thiet ke|ly do|rang buoc)\b/i
-    ]
-  }
-];
+// Trigger *words* for decision/todo/preference/error/question/context live in lexicon.ts, not
+// here, because that list is meant to grow: lexicon-learning.ts tracks words that keep showing
+// up in promoted memories without matching any current trigger, and `smem lexicon suggest`
+// surfaces them once the same word has been confirmed by a human promotion often enough. This
+// is still 0 LLM — it never infers meaning from one message, it only counts repeats across many
+// human-confirmed promotions, which is a stronger and cheaper signal than a single guess.
+//
+// Structural rules stay hardcoded because a word list can't express "ends with a question mark"
+// or "starts with a slash" — those aren't vocabulary, they're shape.
+const STRUCTURAL_RULES: Partial<Record<OfflineLabel, RegExp[]>> = {
+  question: [/\?$/],
+  command: [/^\s*(smem|npm|pnpm|node|git|curl|bash|sh|python|codex|claude)\b/i, /^\s*\/[a-z][\w-]*/i]
+};
 
-const STOPWORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "and",
-  "or",
-  "to",
-  "for",
-  "of",
-  "in",
-  "on",
-  "is",
-  "are",
-  "be",
-  "with",
-  "this",
-  "that",
-  "it",
-  "as",
-  "by",
-  "from",
-  "và",
-  "là",
-  "của",
-  "cho",
-  "mình",
-  "bạn",
-  "này",
-  "đó",
-  "thì",
-  "với"
-]);
+// Fixed check order, matching the original hardcoded rule order — only matters for which label
+// ends up as `primaryLabel` when a text matches more than one.
+const LABEL_ORDER: OfflineLabel[] = ["decision", "todo", "preference", "error", "question", "command", "context"];
 
-export function classifyText(text: string): OfflineClassification {
+export function classifyText(text: string, home: string = defaultSmartMemoryHome()): OfflineClassification {
   const normalized = text.trim();
-  const doc = nlp.readDoc(normalized);
-  const lemmas = doc.tokens().out(its.lemma) as string[];
-  const values = doc.tokens().out(its.value) as string[];
-  const pos = doc.tokens().out(its.pos) as string[];
-  const entities = doc.entities().out() as string[];
-  const labels = classifyLabels(normalized);
-  const keywords = extractKeywords(lemmas, values, pos);
+  const labels = classifyLabels(normalized, home);
+  const keywords = extractKeywords(normalized);
+  const entities = extractEntities(normalized);
   const topics = extractTopics(keywords, entities);
 
   const primaryLabel = labels[0] ?? "note";
@@ -136,53 +70,37 @@ export function classifyText(text: string): OfflineClassification {
     entities,
     languageHint: detectLanguageHint(normalized),
     classifier: {
-      kind: "wink-nlp",
+      kind: "smem-rule",
       version: VERSION,
       confidence: confidence(labels, keywords, normalized)
     }
   };
 }
 
-function classifyLabels(text: string): OfflineLabel[] {
+function classifyLabels(text: string, home: string): OfflineLabel[] {
+  const lexicon = loadLexicon(home);
   const labels: OfflineLabel[] = [];
-  for (const rule of LABEL_RULES) {
-    if (rule.patterns.some((pattern) => pattern.test(text))) {
-      labels.push(rule.label);
+
+  for (const label of LABEL_ORDER) {
+    const lexiconPattern = isLexiconCategory(label) ? buildLexiconPattern(lexicon, label) : undefined;
+    const structuralPatterns = STRUCTURAL_RULES[label] ?? [];
+    const matched = (lexiconPattern && lexiconPattern.test(text)) || structuralPatterns.some((pattern) => pattern.test(text));
+    if (matched) {
+      labels.push(label);
     }
   }
 
   return labels.length > 0 ? labels : ["note"];
 }
 
-function extractKeywords(lemmas: string[], values: string[], pos: string[]): string[] {
-  const counts = new Map<string, number>();
-  for (let index = 0; index < lemmas.length; index += 1) {
-    const raw = (lemmas[index] ?? values[index] ?? "").toLowerCase();
-    const tag = pos[index] ?? "";
-    const token = raw.replace(/[^\p{L}\p{N}_-]/gu, "");
-    if (!token || token.length < 3 || STOPWORDS.has(token)) {
-      continue;
-    }
-    if (!["NOUN", "PROPN", "VERB", "ADJ", "INTJ"].includes(tag)) {
-      continue;
-    }
-    counts.set(token, (counts.get(token) ?? 0) + 1);
-  }
-
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 12)
-    .map(([token]) => token);
-}
-
 function extractTopics(keywords: string[], entities: string[]): string[] {
-  return [...entities.map((entity) => entity.toLowerCase()), ...keywords].filter((value, index, values) => {
-    return value.length > 0 && values.indexOf(value) === index;
-  }).slice(0, 8);
+  return [...entities.map((entity) => entity.toLowerCase()), ...keywords]
+    .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index)
+    .slice(0, 8);
 }
 
 export function detectLanguageHint(text: string): OfflineClassification["languageHint"] {
-  if (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(text)) {
+  if (detectVietnamese(text)) {
     return "mixed";
   }
   if (/[a-z]/i.test(text)) {

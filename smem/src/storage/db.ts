@@ -28,7 +28,7 @@ function applyMigrations(db: SqliteDatabase, group: "registry" | "memory"): void
       db.exec(sql);
     }
     ensureMemoryTableCompatible(db);
-    for (const file of ["002_fts.sql", "003_embeddings.sql"]) {
+    for (const file of ["002_fts.sql", "003_embeddings.sql", "004_graph.sql"]) {
       const sql = readFileSync(join(migrationRoot(), group, file), "utf8");
       db.exec(sql);
     }
@@ -98,6 +98,12 @@ function ensureMemoryColumns(db: SqliteDatabase): void {
   }
   if (!names.has("namespace")) {
     db.exec("ALTER TABLE memories ADD COLUMN namespace TEXT DEFAULT NULL");
+  }
+  if (!names.has("decision_json")) {
+    db.exec("ALTER TABLE memories ADD COLUMN decision_json TEXT DEFAULT NULL");
+  }
+  if (!names.has("superseded_by")) {
+    db.exec("ALTER TABLE memories ADD COLUMN superseded_by TEXT DEFAULT NULL");
   }
 }
 

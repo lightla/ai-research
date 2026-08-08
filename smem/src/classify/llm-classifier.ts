@@ -37,7 +37,7 @@ const SYSTEM_PROMPT = [
   "context = background, architecture, design, or rationale; note = everything else."
 ].join("\n");
 
-export async function classifyWithLlm(text: string, config: LlmClassifierConfig): Promise<LlmClassification> {
+export async function classifyWithLlm(text: string, config: LlmClassifierConfig, home?: string): Promise<LlmClassification> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
@@ -68,7 +68,7 @@ export async function classifyWithLlm(text: string, config: LlmClassifierConfig)
       choices?: Array<{ message?: { content?: string } }>;
     };
     const content = json.choices?.[0]?.message?.content ?? "";
-    const parsed = parseLlmResponse(content, text);
+    const parsed = parseLlmResponse(content, text, home);
 
     return {
       labels: parsed.labels,
@@ -90,7 +90,7 @@ export async function classifyWithLlm(text: string, config: LlmClassifierConfig)
   }
 }
 
-export function parseLlmResponse(content: string, text: string): {
+export function parseLlmResponse(content: string, text: string, home?: string): {
   labels: OfflineLabel[];
   primaryLabel: OfflineLabel;
   topics: string[];
@@ -103,7 +103,9 @@ export function parseLlmResponse(content: string, text: string): {
     throw new Error("LLM response did not contain valid JSON.");
   }
 
-  const fallback = classifyText(text);
+  // classifyText's `home` param has a default, so passing `undefined` through still resolves
+  // to defaultSmartMemoryHome() — no separate branch needed here.
+  const fallback = classifyText(text, home);
   const labels = normalizeLabels(json["labels"], fallback.labels);
   const rawPrimary = typeof json["primaryLabel"] === "string" ? json["primaryLabel"].trim().toLowerCase() : "";
   const primaryLabel = labels.includes(rawPrimary as OfflineLabel)

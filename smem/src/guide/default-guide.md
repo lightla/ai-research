@@ -73,7 +73,9 @@ codex/claude-code/antigravity, and an opencode plugin (`.opencode/plugin/smem.ts
 `~/.config/opencode/plugin/smem.ts` with `--global`) for opencode. Restart the agent once after
 installing.
 
-Native capture writes agent events into `~/.smart-memory/events/pending.jsonl`. This capture is local I/O and does not call an LLM. Captured events are classified by offline NLP/rules, then can be processed into review candidates.
+Native capture writes agent events into `~/.smart-memory/events/pending.jsonl`. This capture is local I/O and does not call an LLM. Captured events are classified by offline rules, then can be processed into review candidates.
+
+Before anything is written, known secret shapes (API keys, bearer tokens, JWTs, GitHub/Slack/AWS/GCP tokens, generic `key=`/`token:` assignments) are redacted to `[REDACTED_SECRET]`, and any text wrapped in `<private>...</private>` is redacted to `[REDACTED]`. This is a best-effort regex filter, not a guarantee — it catches known key shapes, not arbitrary secrets. Wrap anything sensitive that doesn't match a known pattern in `<private>` tags yourself if it must not reach `pending.jsonl`.
 
 Remove smem bootstrap/capture config from a project:
 
@@ -99,7 +101,7 @@ Layer 1: raw event
   - not trusted as official memory
 
 Layer 2: classified raw event
-  - source: raw event + offline wink-nlp/rules
+  - source: raw event + offline regex rules (bilingual, see "Lexicon" below)
   - fields: captureKind, signal, classification, classifier
   - purpose: cheap 0-token labels/topics/keywords
   - still not official memory
@@ -121,7 +123,7 @@ Hook-captured events are marked separately from active memories:
 ```text
 captureKind: raw-input | raw-output | tool-event | raw-event
 creator.kind: agent-hook
-classifier.kind: wink-nlp | smem-rule
+classifier.kind: smem-rule | llm
 ```
 
 This means passive console/session capture is auditable and not confused with user/agent-authored `smem store` records.
@@ -132,7 +134,7 @@ Classify text offline without LLM tokens:
 smem classify "chốt dùng SQLite cho database storage"
 ```
 
-The default classifier is fully offline (`wink-nlp` + regex labels, 0 tokens). You can optionally plug in a free local LLM (or any OpenAI-compatible endpoint) to get higher-quality labels/topics/keywords. Everything is configured through the CLI:
+The default classifier is fully offline (bilingual regex labels + a self-expanding lexicon, 0 tokens — see "Lexicon" below). You can optionally plug in a free local LLM (or any OpenAI-compatible endpoint) to get higher-quality labels/topics/keywords. Everything is configured through the CLI:
 
 ```bash
 smem config set classifier ollama
@@ -334,9 +336,23 @@ Official memory:      smem store OR smem promote; read with smem recall/list/con
 | `smem reject <id>` | User or agent | Candidate is wrong/noisy | Marks candidate rejected |
 | `smem export --out <file>` | User | Backup or move memories | Writes portable JSON with ids/source metadata |
 | `smem import <file>` | User | Restore or copy memories into the current project | Imports records; preserves ids |
+| `smem feed <file>` | Agent | User wants several decisions/notes/todos written up at once | Parses a markdown file into multiple memory records — see "Markdown Import" |
 | `smem scan --store <path>` | User | Registry mapping was lost but outsider stores remain | Rebuilds mappings from `project.json` metadata |
 | `smem index` | User or agent | Before semantic/hybrid vector search | Builds embedding index |
 | `smem render` | User mostly | Wants read-only Markdown view | Writes derived Markdown |
+| `smem entity add ...` | Agent or user | A module/domain object/decision/constraint is worth naming on its own | Creates or updates one graph entity (idempotent by name) |
+| `smem entity list` / `entity show <slug>` | Agent or user | Need to see known entities | Reads graph entities |
+| `smem relate --from ... --to ... --type ...` | Agent or user | Two existing entities relate at the module/domain level (e.g. event streaming between modules) | Creates or updates one typed relation |
+| `smem graph` | Agent mostly | Need the big-picture cross-module map | Prints macro entities + relations, no detail |
+| `smem focus <slug>` | Agent mostly | Need one entity's full relation detail and what it contains | Prints one entity zoomed in |
+| `smem lexicon` / `lexicon list` | Agent or user | Check what trigger words the offline classifier currently uses | Reads the active lexicon |
+| `smem lexicon add/remove` | User preferred | Teach or correct a trigger word directly | Edits the lexicon file |
+| `smem lexicon suggest` | User | Review words the classifier keeps missing, learned from confirmed promotions | Lists candidates above the repeat threshold |
+| `smem lexicon dismiss` | User | A suggested word is noise, not a real signal | Clears its counter without adding it |
+| `smem store --type decision --chosen/--rejected/--reason` | Agent or user | Decision has clear chosen/rejected/reason | Stores with explicit structured fields |
+| `smem supersede <old-id> --by <new-id>` | User preferred | A decision replaces an older one | Marks the old one superseded, links supersededBy |
+| `smem habits` | User | Curious what command sequences repeat | Mines your own smem command history |
+| `smem query-patterns` | User | Curious what topics tend to be searched together | Mines your own smem recall history |
 
 Default rule:
 
@@ -398,6 +414,10 @@ smem store --type decision --title "..." --tags tag1,tag2 "..."
 ```
 
 Use `smem store` for deliberate memory. Use `smem process` + `smem candidates` for passive hook-captured memory review.
+
+If the user asks for several things to be remembered at once (a recap, a design doc, a batch of
+decisions/todos), don't loop `smem store`. Write one markdown file and run `smem feed <file>` —
+see "Markdown Import" below for the exact structure to write.
 
 ## Core Commands
 
@@ -530,6 +550,240 @@ Use `smem store` after:
 Use `smem process` after a long hooked session to convert classified raw events into reviewable candidates.
 
 Use `smem candidates` before promoting anything from passive capture. Do not treat candidates as official memory until promoted.
+
+## Domain Graph
+
+Memory records answer "what happened / what was decided". The domain graph answers a different
+question: "what does this thing know about the other things around it, and how are they
+related". It is a separate store (entities + relations) next to memory records, not a memory
+type.
+
+The graph has exactly two tiers, and only two tiers are ever stored:
+
+```text
+Tier 1 (macro): module <-> module / decision / constraint
+  - `smem graph` shows only this tier: entities + relations, no `detail`, so the whole
+    picture fits in a glance.
+
+Tier 2 (meso, zoom-in only): domain_object <-> domain_object, inside or across modules
+  - shown by `smem focus <slug>`, together with full relation `detail`.
+
+Tier 3 (class/file/call level): never stored.
+  - Storing "class A is called by 12 methods in file B" goes stale the moment someone
+    refactors, and floods the graph with noise (the "hairball problem"). Instead, an entity
+    can carry a `--code-ref` breadcrumb (a path, not an index) so the agent's own Read/Grep
+    resolves that detail on demand, always against the real code, never a cached copy of it.
+```
+
+Entity types: `module`, `domain_object`, `decision`, `constraint`.
+Relation types: `DEPENDS_ON`, `CONTAINS`, `COMMUNICATES_VIA`, `IMPACTS`, `RESOLVES`, `REFERENCES`.
+
+Create entities, then relate them:
+
+```bash
+smem entity add --type module --name "User"
+smem entity add --type module --name "Order"
+smem entity add --type domain_object --name "OrderItem" --description "line item of an order"
+smem entity add --type module --name "Order" --code-ref src/order/
+
+smem relate --from User --to Order --type COMMUNICATES_VIA \
+  --detail "Kafka topic order.created (event streaming)"
+smem relate --from Order --to OrderItem --type CONTAINS
+```
+
+`smem entity add` is idempotent by name: re-declaring "User" resolves to the same entity and only
+updates `--description`/`--code-ref` if given. Declaring the same name with a different `--type`
+is a hard error — an entity's type is its identity, it never silently changes.
+
+`smem relate` requires both entities to already exist. It will not guess a type for a name it
+has not seen — that ambiguity (is "Payment" a module or a domain_object?) is exactly what caused
+hairball graphs elsewhere, so it is resolved by the caller, not inferred:
+
+```bash
+smem relate --from Payment --to Order --type DEPENDS_ON
+# Error: Entity not found: "Payment". Create it first with: smem entity add --type ... --name "Payment"
+```
+
+Read the graph big-picture first, then zoom in only where needed:
+
+```bash
+smem graph              # macro tier: modules/decisions/constraints, no detail
+smem focus Order         # this entity's full relation detail + what it CONTAINS
+smem entity list --type module
+smem entity show order
+```
+
+Use the graph when a decision or relationship crosses module boundaries and is worth remembering
+on its own (not just inside one memory record's text) — e.g. "User and Order talk through event
+streaming", "OrderService depends on the pricing decision", "this constraint impacts both Auth
+and Billing". Do not use it for file-level or call-level structure; that belongs to the agent's
+own code-reading tools, not to smem.
+
+## Lexicon — trigger words the offline classifier learns over time
+
+The offline classifier's decision/todo/preference/error/question/context labels are driven by a
+trigger-word dictionary, not a hardcoded list. This is still 0 LLM — it never guesses meaning
+from one message, it only counts repeats across many human-confirmed promotions:
+
+```bash
+smem lexicon                 # show all active trigger words
+smem lexicon list decision   # show one category
+smem lexicon add decision "nghĩ nên"     # add a word/phrase by hand
+smem lexicon remove decision "nghĩ nên"  # remove one
+smem lexicon reset           # discard learned/added words, back to built-in defaults
+```
+
+**How it learns a habit without an LLM:** every time a human confirms a memory's type directly
+— `smem store --type X ...` (explicit from the start) or `smem promote <candidate-id>`
+(confirming a passive capture) — and none of the current lexicon words for that type appear
+anywhere in the content, that word gap is counted. A single confirmation proves nothing (could
+be a fluke); the same word showing up across several independently-confirmed memories of the
+same type is a real signal the user's own phrasing means something the dictionary doesn't know
+yet:
+
+```bash
+smem lexicon suggest                    # words that crossed the threshold, not yet in the lexicon
+smem lexicon suggest --threshold 5      # require more repeats before suggesting
+smem lexicon dismiss decision "nghĩ"    # clear a suggestion's counter without adding it
+```
+
+Suggestions never get added automatically — same "no silent merge" rule the rest of smem follows
+for memory/entity merges. A human reviews `smem lexicon suggest` and runs `smem lexicon add` to
+accept one.
+
+This has a real ceiling: it only catches phrasing that repeats. A one-off way of saying something
+never crosses the threshold and is never suggested — that gap is inherent to staying 0 LLM, not
+a bug. If near-100% coverage of arbitrary phrasing matters more than $0 cost, that requires an
+LLM classifier (`smem config set classifier ollama` / `openai`), which stays available as an
+explicit opt-in, not a requirement.
+
+## Decision Intelligence — structured fields, extracted without an LLM
+
+`type: decision` memories can carry structured fields beyond free-text `content`:
+`chosen`, `rejectedAlternatives`, `reasoning`. These are either given explicitly or
+regex-extracted from the content itself — still 0 LLM:
+
+```bash
+smem store --type decision --chosen "PostgreSQL" --rejected MongoDB --reason "need ACID" \
+  "Storage engine decision"
+
+# or just write it naturally — the same fields get extracted automatically:
+smem store --type decision --tags storage "Chốt dùng PostgreSQL thay vì MongoDB vì cần ACID."
+```
+
+Recognized shapes (English and Vietnamese): "chose X over Y because Z" / "chọn X thay vì Y vì
+Z", "decided to X because Y" / "quyết định X vì Y", and standalone "rejected X because Y" /
+"loại X vì Y" mentions. No match just means the memory is stored as plain content — never an
+error.
+
+**Overlap detection:** storing a decision checks it against prior *active* decision memories
+(tag overlap + `chosen` word overlap, no embeddings). A hit is printed as a suggestion, never
+acted on automatically:
+
+```bash
+smem supersede <old-id> --by <new-id>   # only this marks the old one superseded
+```
+
+`supersede` requires both memories to already exist and the old one to be active. It sets the
+old memory's status to `superseded` and links `supersededBy` — a human decision, not an inferred
+one, same "no silent merge" rule the rest of smem follows for entities and lexicon suggestions.
+
+## Habits and Query Patterns — mined from your own usage, 0 LLM
+
+Two more ratio-thresholded, frequency-only learners, same principle as the lexicon:
+
+```bash
+smem habits            # "smem recall -> smem store" sequences you run often
+smem query-patterns    # topic pairs from your own `smem recall` history ("auth" -> "middleware")
+```
+
+`smem habits` mines your own `smem` command history (every command is logged automatically via
+a post-action hook, except `hook run` which fires constantly and isn't a deliberate choice).
+`smem query-patterns` mines topics extracted from your own `smem recall` queries. Both use the
+same ratio-over-flat-count logic as `smem lexicon suggest` — a pair's share of all observed
+pairs, not just a raw count, so a common pair doesn't get lost in a sea of unrelated activity and
+a rare one doesn't get flagged just because there's a lot of volume.
+
+`smem recall` also prints a "Related searches" hint (skipped with `--compact`) when the query's
+topics match a learned pattern — informational only, never expands the search itself.
+
+## Markdown Import — bulk-author memories as a file, then `smem feed` it
+
+If the user asks you to write up several decisions/notes/todos at once (a session recap, a
+design doc, a batch of things to remember), don't call `smem store` N times. Write ONE markdown
+file in the structure below, then run:
+
+```bash
+smem feed <file>
+```
+
+**Structure** — every record is a level-2 (`##`) heading. Anything before the first `##` heading
+(e.g. a top-level `# Session Notes` title) is ignored:
+
+```markdown
+## <type>: <title>
+tags: tag1, tag2
+namespace: optional-namespace
+scope: local
+
+Free-text content — one or more paragraphs. Everything up to the next "## " heading
+(or end of file) becomes this record's content.
+
+## <type>: <title>
+...
+```
+
+Rules:
+- `<type>` must be one of: `decision`, `context`, `todo`, `preference`, `error`, `note`
+  (case-insensitive). If the heading has no `:` or the prefix isn't a recognized type, the whole
+  heading text becomes the title and the record falls back to `note` — not an error, just a
+  softer signal, so don't worry about getting every heading perfectly formatted.
+- Metadata lines (`key: value`) must come immediately after the heading, one per line, no blank
+  line required between the heading and the first metadata line. Parsing stops at the first blank
+  line or the first line that isn't `key: value` — everything after that is content, so put
+  metadata first, always.
+- Recognized metadata keys: `tags`, `namespace`, `scope` (`local` or `global` — lets one file
+  write to both scopes; defaults to whatever `--scope` the command was run with), and for
+  `decision` records specifically: `chosen`, `rejected` (comma-separated), `reason`.
+- If a `decision` record has no explicit `chosen`/`rejected`/`reason` metadata, `smem feed` still
+  tries to regex-extract them from the content itself (same as `smem store` — see "Decision
+  Intelligence" above). Prefer writing natural sentences ("Chốt dùng X thay vì Y vì Z") over
+  filling the metadata by hand; both work, metadata just skips the extraction step.
+- A heading with metadata but no actual content is skipped (reported, not an error) — most likely
+  a heading that was only ever meant to hold structure, not information.
+
+Example a session recap might actually look like:
+
+```markdown
+# Session recap
+
+## decision: Storage engine
+tags: storage, database
+
+Chốt dùng PostgreSQL thay vì MongoDB vì cần ACID.
+
+## todo: Auth tests
+tags: auth, testing
+
+Cần viết integration test cho login flow trước thứ 6.
+
+## error: DB timeout under load
+tags: database
+
+Lỗi timeout khi kết nối PostgreSQL lúc load cao — đã fix bằng connection pool.
+```
+
+```bash
+smem feed session-recap.md
+```
+
+Options: `--scope <local|global>` sets the default for records without their own `scope:` line;
+`--pending-review` creates every record as pending-review instead of active, if the user wants to
+review a batch before it becomes official memory.
+
+This is a separate, purpose-built format for *authoring* new memories in bulk — it is not the
+same as `smem render`'s output (that's read-only, grouped by type, and never meant to be
+re-imported) or `smem export`'s JSON (that's the lossless round-trip format for backup/transfer).
 
 ## Record Types
 

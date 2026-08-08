@@ -33,7 +33,7 @@ export async function processCandidates(options: {
     return { scanned: 0, created: 0, skipped: 0, skippedByReason: emptySkipReasons() };
   }
 
-  const events = readEvents(queuePath).slice(-(options.limit ?? 200));
+  const events = readEvents(queuePath, home).slice(-(options.limit ?? 200));
   await enrichWithLlm(events, home);
   const repo = new MemoryRepository(options.project, { scope: options.scope, home });
   let scanned = 0;
@@ -78,14 +78,14 @@ export async function processCandidates(options: {
   return { scanned, created, skipped, skippedByReason };
 }
 
-function readEvents(path: string): NormalizedHookEvent[] {
+function readEvents(path: string, home: string): NormalizedHookEvent[] {
   return readFileSync(path, "utf8")
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        return [normalizeRawEvent(JSON.parse(line) as Record<string, unknown>, line)];
+        return [normalizeRawEvent(JSON.parse(line) as Record<string, unknown>, line, home)];
       } catch {
         return [];
       }
@@ -108,7 +108,7 @@ async function enrichWithLlm(events: NormalizedHookEvent[], home: string): Promi
   await mapLimit(targets, 4, async (event) => {
     const text = textForCandidate(event) as string;
     try {
-      const llm = await classifyWithLlm(text, config);
+      const llm = await classifyWithLlm(text, config, home);
       event.classification = llm;
       event.classifier = {
         kind: "llm",
@@ -162,7 +162,7 @@ function emptySkipReasons(): Record<ProcessSkipReason, number> {
   };
 }
 
-function normalizeRawEvent(raw: Record<string, unknown>, originalLine: string): NormalizedHookEvent {
+function normalizeRawEvent(raw: Record<string, unknown>, originalLine: string, home: string): NormalizedHookEvent {
   const payload = recordField(raw, "payload") ?? raw;
   const event = stringField(raw, "event") ?? stringField(payload, "hook_event_name") ?? stringField(payload, "hookEventName") ?? "unknown";
   const captureKind = captureKindField(raw["captureKind"]) ?? classifyCaptureKind(event);
@@ -176,10 +176,10 @@ function normalizeRawEvent(raw: Record<string, unknown>, originalLine: string): 
     ...(rawTimestamp ? { timestamp: rawTimestamp } : {})
   });
   const classification = transcriptText
-    ? classifyText(transcriptText)
+    ? classifyText(transcriptText, home)
     : isClassification(raw["classification"])
       ? raw["classification"]
-      : classifyText(textForClassification(payload));
+      : classifyText(textForClassification(payload), home);
   const eventId = stringField(raw, "eventId") ?? legacyEventId(originalLine);
   const turnId = stringField(raw, "turnId");
   const sessionId =

@@ -16,8 +16,11 @@ need node
 need npm
 
 NODE_MAJOR="$(node -p "Number(process.versions.node.split('.')[0])")"
-if [ "$NODE_MAJOR" -lt 24 ]; then
-  echo "smem installer: Node.js 24+ is required, found $(node --version)" >&2
+NODE_MINOR="$(node -p "Number(process.versions.node.split('.')[1])")"
+# node:sqlite exists from v22.5.0 but needs --experimental-sqlite before v22.13.0. Rather than
+# pass that flag, require the version where it's no longer needed.
+if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 13 ]; }; then
+  echo "smem installer: Node.js 22.13+ is required (for node:sqlite without a flag), found $(node --version)" >&2
   exit 1
 fi
 
