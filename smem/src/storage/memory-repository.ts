@@ -262,6 +262,46 @@ export class MemoryRepository {
     return Boolean(row);
   }
 
+  /**
+   * For each raw history id in `rawIds`, find the official memory it was promoted/merged into,
+   * if any — driven by the `source.mergedFrom` list the web history "promote"/"merge" actions
+   * write. A raw item stays visible in history either way; this only tells the UI whether to
+   * show "already saved" and which memory to link to. Scans active memories directly (same
+   * substring-on-source_json approach as `hasSourceEvent`) rather than a separate index table —
+   * this is a local single-user store, not a scale where that scan matters.
+   */
+  findPromotedRawIds(rawIds: string[]): Record<string, { memoryId: string; title?: string; type: MemoryRecord["type"]; content: string }> {
+    if (rawIds.length === 0) {
+      return {};
+    }
+
+    const rows = this.db
+      .prepare(`SELECT * FROM memories WHERE project_id = ? AND scope = ? AND status = 'active' AND source_json LIKE '%mergedFrom%'`)
+      .all(this.projectIdForScope(), this.scope) as MemoryRow[];
+
+    const rawIdSet = new Set(rawIds);
+    const result: Record<string, { memoryId: string; title?: string; type: MemoryRecord["type"]; content: string }> = {};
+    for (const row of rows) {
+      const memory = this.mapMemory(row);
+      const mergedFrom = memory.source["mergedFrom"];
+      if (!Array.isArray(mergedFrom)) {
+        continue;
+      }
+      for (const entry of mergedFrom) {
+        const rawId = entry && typeof entry === "object" ? (entry as Record<string, unknown>)["id"] : undefined;
+        if (typeof rawId === "string" && rawIdSet.has(rawId) && !result[rawId]) {
+          result[rawId] = {
+            memoryId: memory.id,
+            ...(memory.title ? { title: memory.title } : {}),
+            type: memory.type,
+            content: memory.content
+          };
+        }
+      }
+    }
+    return result;
+  }
+
   recall(query: string, limit = 10): MemoryRecord[] {
     return this.retrieve({ query, limit, mode: "fts" }).map((result) => result.memory);
   }

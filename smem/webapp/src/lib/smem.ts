@@ -146,6 +146,15 @@ export function searchHistory(
   });
 }
 
+export type MergedFromEntry = { id: string; kind: "event" | "transcript" };
+
+export type PromotedInfo = { memoryId: string; title?: string; type: MemoryRecord["type"]; content: string };
+
+/** For a page of history results, which ones already got promoted/merged into an official memory. */
+export function findPromotedRawIds(scope: Scope, projectId: string | null, rawIds: string[]): Record<string, PromotedInfo> {
+  return withRepo(scope, projectId, (repo) => repo.findPromotedRawIds(rawIds));
+}
+
 export function deleteHistoryMatch(kind: "event" | "transcript", id: string): boolean {
   return kind === "event" ? deleteRawEventById(id) : deleteTranscriptRecordById(id);
 }

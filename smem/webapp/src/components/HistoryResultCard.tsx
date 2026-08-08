@@ -1,10 +1,11 @@
 'use client'
 
 import { useState, useTransition, useEffect } from 'react'
-import { CheckCircle2, Edit, Save, Trash2, X } from 'lucide-react'
-import type { HistoryMatch, Scope } from '@/lib/smem'
+import { Edit, Save, Trash2, X } from 'lucide-react'
+import type { HistoryMatch, MergedFromEntry, PromotedInfo, Scope } from '@/lib/smem'
 import { deleteHistoryAction, promoteHistoryAction, updateHistoryAction } from '@/lib/actions'
 import MarkdownRenderer from './MarkdownRenderer'
+import PromotedBadge from './PromotedBadge'
 import { wrapIfCodeLike } from '@/lib/markdown'
 
 const TYPES = ['decision', 'context', 'todo', 'preference', 'error', 'note'] as const
@@ -13,6 +14,10 @@ interface Props {
   match: HistoryMatch
   scope: Scope
   projectId: string | null
+  selected: boolean
+  onToggleSelect: (id: string) => void
+  promoted?: PromotedInfo
+  onPromoted: (id: string, info: PromotedInfo) => void
   onDeleted: (id: string) => void
   onUpdated: (oldId: string, updated: HistoryMatch) => void
 }
@@ -28,10 +33,19 @@ function Tag({ children }: { children: React.ReactNode }) {
   )
 }
 
-export default function HistoryResultCard({ match, scope, projectId, onDeleted, onUpdated }: Props) {
+export default function HistoryResultCard({
+  match,
+  scope,
+  projectId,
+  selected,
+  onToggleSelect,
+  promoted,
+  onPromoted,
+  onDeleted,
+  onUpdated
+}: Props) {
   const [isPending, startTransition] = useTransition()
   const [promoting, setPromoting] = useState(false)
-  const [promoted, setPromoted] = useState(false)
   const [type, setType] = useState<(typeof TYPES)[number]>((match.type as any) || 'note')
   const [namespace, setNamespace] = useState(match.namespace || '')
   const [title, setTitle] = useState(match.title || '')
@@ -112,16 +126,34 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
 
   const handlePromote = () => {
     const tags = tagsInput.split(',').map((t) => t.trim()).filter(Boolean)
+    const source: MergedFromEntry = { id: match.id, kind: match.kind }
     startTransition(async () => {
-      await promoteHistoryAction(scope, projectId, { type, namespace: namespace.trim() || null, title, content, tags })
+      const memory = await promoteHistoryAction(
+        scope,
+        projectId,
+        { type, namespace: namespace.trim() || null, title, content, tags },
+        source
+      )
       setPromoting(false)
-      setPromoted(true)
+      onPromoted(match.id, {
+        memoryId: memory.id,
+        ...(memory.title ? { title: memory.title } : {}),
+        type: memory.type,
+        content: memory.content
+      })
     })
   }
 
   return (
     <li id={match.id} className="px-4 py-3 rounded-lg" style={{ background: 'var(--surface)', border: '1.5px solid var(--border)' }}>
       <div className="flex items-center gap-1.5 flex-wrap mb-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(match.id)}
+          title="Chọn để gộp với các tin nhắn khác"
+          className="mr-0.5"
+        />
         <Tag>{match.kind}</Tag>
         {match.recordKind && <Tag>{match.recordKind}</Tag>}
         {match.eventName && <Tag>{match.eventName}</Tag>}
@@ -129,13 +161,10 @@ export default function HistoryResultCard({ match, scope, projectId, onDeleted, 
         {match.timestamp && <Tag>{match.timestamp}</Tag>}
         {match.namespace && <Tag>ns:{match.namespace}</Tag>}
         <Tag>{match.id}</Tag>
+        {promoted && <PromotedBadge info={promoted} scope={scope} projectId={projectId} />}
 
         <div className="ml-auto flex items-center gap-2">
-          {promoted ? (
-            <span className="flex items-center gap-1 text-xs font-mono" style={{ color: 'var(--accent)' }}>
-              <CheckCircle2 size={12} /> đã lưu thành official
-            </span>
-          ) : (
+          {!promoted && (
             <button
               onClick={() => setPromoting((v) => !v)}
               className="flex items-center gap-1 text-xs px-2 py-1 rounded font-mono"
